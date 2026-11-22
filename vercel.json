@@ -5,8 +5,7 @@
       "framework": "vite"
     },
     "server": {
-      "root": "server",
-      "routePrefix": "/api"
+      "root": "server"
     }
   }
 }
