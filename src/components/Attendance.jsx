@@ -11,17 +11,14 @@ export default function Attendance({ onSuccess }) {
   const [coords, setCoords] = useState(null);
   const [distance, setDistance] = useState(null);
   const [isInside, setIsInside] = useState(false);
-
   const [capturedImage, setCapturedImage] = useState(null);
   const [submittedRecord, setSubmittedRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [checkingFlow, setCheckingFlow] = useState(false);
-  const [videoReady, setVideoReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const readyPollRef = useRef(null);
+  const streamRef = useRef(null);
   const [cameraActive, setCameraActive] = useState(false);
 
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -36,23 +33,24 @@ export default function Attendance({ onSuccess }) {
     return 2 * R * Math.asin(Math.sqrt(a));
   };
 
-  const stopReadyPoll = () => {
-    if (readyPollRef.current) {
-      clearInterval(readyPollRef.current);
-      readyPollRef.current = null;
-    }
-  };
-
   const stopCameraTracks = useCallback(() => {
-    stopReadyPoll();
-    const stream = videoRef.current?.srcObject;
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-    setVideoReady(false);
     setCameraActive(false);
   }, []);
+
+  // Attach active media stream once <video> element is mounted in DOM
+  useEffect(() => {
+    if (cameraActive && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraActive]);
 
   useEffect(() => {
     return () => {
@@ -60,124 +58,68 @@ export default function Attendance({ onSuccess }) {
     };
   }, [stopCameraTracks]);
 
-  const checkAndMarkVideoReady = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return false;
-    if (video.readyState >= 2 || video.videoWidth > 0 || video.videoHeight > 0) {
-      setVideoReady(true);
-      stopReadyPoll();
-      return true;
+  const verifyLocation = () => {
+    setErrorMsg('');
+    setLocationStatus('Fetching real-time GPS coordinates...');
+
+    if (!navigator.geolocation) {
+      setIsInside(false);
+      setLocationStatus('Geolocation is not supported by your browser.');
+      return;
     }
-    return false;
-  }, []);
 
-  const fetchBackgroundLocation = () =>
-    new Promise((resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(new Error('Geolocation is not supported by your browser.'));
-        return;
-      }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const userLat = position.coords.latitude;
+        const userLng = position.coords.longitude;
+        const accuracy = position.coords.accuracy || 0;
+        const dist = Math.round(calculateDistance(userLat, userLng, CAMPUS_LAT, CAMPUS_LNG));
 
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const userLat = position.coords.latitude;
-          const userLng = position.coords.longitude;
-          const accuracy = position.coords.accuracy || 0;
-          const dist = Math.round(calculateDistance(userLat, userLng, CAMPUS_LAT, CAMPUS_LNG));
-          const inside = dist <= ALLOWED_RADIUS;
+        setCoords({ lat: userLat, lng: userLng, accuracy });
+        setDistance(dist);
 
-          setCoords({ lat: userLat, lng: userLng, accuracy });
-          setDistance(dist);
-          setIsInside(inside);
-
-          if (inside) {
-            setLocationStatus(
-              `Auto-Verified! Inside NIELIT Agartala zone (${dist}m away, accuracy ±${Math.round(accuracy)}m).`
-            );
-            resolve({ lat: userLat, lng: userLng, accuracy, dist, inside });
-          } else {
-            const msg = `Outside radius! You are ${dist}m away (Limit: ${ALLOWED_RADIUS}m). Selfie blocked.`;
-            setLocationStatus(msg);
-            reject(new Error(msg));
-          }
-        },
-        (error) => {
+        if (dist <= ALLOWED_RADIUS) {
+          setIsInside(true);
+          setLocationStatus(
+            `Verified! Inside NIELIT Agartala zone (${dist}m away, accuracy ±${Math.round(accuracy)}m).`
+          );
+        } else {
           setIsInside(false);
-          const msg = 'Location error: ' + error.message;
-          setLocationStatus(msg);
-          reject(new Error(msg));
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
-      );
-    });
+          setLocationStatus(
+            `Outside radius! You are ${dist}m away (Limit: ${ALLOWED_RADIUS}m).`
+          );
+        }
+      },
+      (error) => {
+        setIsInside(false);
+        setLocationStatus('Location error: ' + error.message);
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+  };
 
-  const startCameraAndAutoVerify = async () => {
+  const startCamera = async () => {
     setErrorMsg('');
     setCapturedImage(null);
-    setVideoReady(false);
-    setCheckingFlow(true);
-    setLocationStatus('Background mein automatic GPS location check ho rahi hai...');
+    stopCameraTracks();
 
     try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Is browser mein camera support nahi hai ya HTTPS required hai.');
-      }
-
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user' },
         audio: false,
       });
-
+      streamRef.current = stream;
       setCameraActive(true);
-
-      setTimeout(async () => {
-        const video = videoRef.current;
-        if (video) {
-          video.srcObject = stream;
-          try {
-            await video.play();
-          } catch {
-            // Handled by video events & poll
-          }
-          checkAndMarkVideoReady();
-        }
-      }, 0);
-
-      stopReadyPoll();
-      readyPollRef.current = setInterval(() => {
-        checkAndMarkVideoReady();
-      }, 250);
-
-      setTimeout(() => {
-        stopReadyPoll();
-        setVideoReady(true);
-      }, 2000);
-
-      await fetchBackgroundLocation();
     } catch (err) {
       stopCameraTracks();
-      setIsInside(false);
-      setErrorMsg(err.message || 'Location ya camera verification fail ho gaya.');
-    } finally {
-      setCheckingFlow(false);
+      setErrorMsg('Camera access denied or unavailable: ' + err.message);
     }
   };
 
   const capturePhoto = () => {
-    setErrorMsg('');
-
-    if (!isInside || !coords) {
-      stopCameraTracks();
-      setErrorMsg('Aap allowed location ke bahar hain, isliye selfie capture nahi ho sakti.');
-      return;
-    }
-
     const canvas = canvasRef.current;
     const video = videoRef.current;
-    if (!canvas || !video) {
-      setErrorMsg('Camera preview available nahi hai. Dobara try karein.');
-      return;
-    }
+    if (!canvas || !video) return;
 
     const width = video.videoWidth || 480;
     const height = video.videoHeight || 360;
@@ -197,7 +139,7 @@ export default function Attendance({ onSuccess }) {
     setErrorMsg('');
 
     if (!coords || !isInside) {
-      setErrorMsg('Allowed geofence ke andar location verify hona zaroori hai.');
+      setErrorMsg('Pehle campus geofence ke andar GPS location verify karein.');
       return;
     }
 
@@ -297,14 +239,14 @@ export default function Attendance({ onSuccess }) {
         </div>
       )}
 
-      {/* Step 1: Auto Background Location & Camera Shortcut */}
+      {/* Step 1: GPS Geofence Verification */}
       <div className="border border-gray-200/80 p-5 rounded-xl bg-gray-50/40 space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
             <span className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-medium">
               1
             </span>
-            Auto Geofence & Camera Shortcut (NIELIT Agartala)
+            Geofence Verification (NIELIT Agartala)
           </h3>
           {isInside && (
             <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs px-3 py-1 rounded-full font-medium">
@@ -313,16 +255,13 @@ export default function Attendance({ onSuccess }) {
           )}
         </div>
 
-        {!cameraActive && !capturedImage && (
-          <button
-            type="button"
-            disabled={checkingFlow}
-            onClick={startCameraAndAutoVerify}
-            className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
-          >
-            {checkingFlow ? 'Checking Location & Camera...' : 'Open Camera Feed'}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={verifyLocation}
+          className="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+        >
+          Check My Location
+        </button>
 
         {locationStatus && (
           <p className="text-xs font-medium text-gray-600 bg-white border border-gray-200 p-2.5 rounded-lg">
@@ -332,7 +271,7 @@ export default function Attendance({ onSuccess }) {
       </div>
 
       {/* Step 2: Live Selfie Capture */}
-      {(cameraActive || capturedImage) && (
+      {isInside && (
         <div className="border border-gray-200/80 p-5 rounded-xl bg-gray-50/40 space-y-4">
           <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
             <span className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-medium">
@@ -341,6 +280,16 @@ export default function Attendance({ onSuccess }) {
             Live Selfie Capture
           </h3>
 
+          {!cameraActive && !capturedImage && (
+            <button
+              type="button"
+              onClick={startCamera}
+              className="bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+            >
+              Open Camera Feed
+            </button>
+          )}
+
           {cameraActive && (
             <div className="space-y-3">
               <video
@@ -348,24 +297,15 @@ export default function Attendance({ onSuccess }) {
                 autoPlay
                 playsInline
                 muted
-                onLoadedMetadata={checkAndMarkVideoReady}
-                onLoadedData={checkAndMarkVideoReady}
-                onCanPlay={checkAndMarkVideoReady}
-                onPlaying={checkAndMarkVideoReady}
                 className="w-full max-w-xs h-48 border border-gray-200 rounded-xl object-cover bg-black shadow-inner"
               />
               <div>
                 <button
                   type="button"
-                  disabled={!videoReady || !isInside}
                   onClick={capturePhoto}
-                  className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
                 >
-                  {!videoReady
-                    ? 'Loading Camera Frame...'
-                    : !isInside
-                    ? 'Verifying Location...'
-                    : 'Capture Snapshot'}
+                  Capture Snapshot
                 </button>
               </div>
             </div>
@@ -388,7 +328,7 @@ export default function Attendance({ onSuccess }) {
               <div>
                 <button
                   type="button"
-                  onClick={startCameraAndAutoVerify}
+                  onClick={startCamera}
                   className="text-xs text-gray-600 hover:text-gray-900 font-medium underline cursor-pointer"
                 >
                   Retake photo
