@@ -16,8 +16,6 @@ export default function Attendance({ onSuccess, currentUser }) {
   const [isInside, setIsInside] = useState(false);
 
   const [faceStatus, setFaceStatus] = useState('');
-  const [faceDetected, setFaceDetected] = useState(false);
-  const [livenessVerified, setLivenessVerified] = useState(false);
   const [faceMatchScore, setFaceMatchScore] = useState(null);
   const [faceSignature, setFaceSignature] = useState(null);
   const [isFirstEnrollment, setIsFirstEnrollment] = useState(false);
@@ -32,10 +30,8 @@ export default function Attendance({ onSuccess, currentUser }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
+  const readyPollRef = useRef(null);
   const landmarkerRef = useRef(null);
-  const blinkCountRef = useRef(0);
-  const livenessPassedRef = useRef(false);
-  const eyesClosedRef = useRef(false);
   const latestSignatureRef = useRef(null);
   const [cameraActive, setCameraActive] = useState(false);
 
@@ -68,8 +64,16 @@ export default function Attendance({ onSuccess, currentUser }) {
     }
   };
 
+  const stopReadyPoll = () => {
+    if (readyPollRef.current) {
+      clearInterval(readyPollRef.current);
+      readyPollRef.current = null;
+    }
+  };
+
   const stopCameraTracks = useCallback(() => {
     stopFaceLoop();
+    stopReadyPoll();
     const stream = videoRef.current?.srcObject;
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
@@ -85,11 +89,15 @@ export default function Attendance({ onSuccess, currentUser }) {
     };
   }, [stopCameraTracks]);
 
-  const markVideoReadyIfPossible = useCallback(() => {
+  const checkAndMarkVideoReady = useCallback(() => {
     const video = videoRef.current;
-    if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+    if (!video) return false;
+    if (video.readyState >= 2 || video.videoWidth > 0 || video.videoHeight > 0) {
       setVideoReady(true);
+      stopReadyPoll();
+      return true;
     }
+    return false;
   }, []);
 
   const extractFaceSignature = (landmarks) => {
@@ -147,16 +155,41 @@ export default function Attendance({ onSuccess, currentUser }) {
     return dot / (Math.sqrt(normA) * Math.sqrt(normB));
   };
 
-  const getEyeAspectRatio = (landmarks, upperIdx, lowerIdx, leftIdx, rightIdx) => {
-    const v = Math.hypot(
-      landmarks[upperIdx].x - landmarks[lowerIdx].x,
-      landmarks[upperIdx].y - landmarks[lowerIdx].y
-    );
-    const h = Math.hypot(
-      landmarks[rightIdx].x - landmarks[leftIdx].x,
-      landmarks[rightIdx].y - landmarks[leftIdx].y
-    );
-    return h > 0 ? v / h : 0.3;
+  // First time: no strict biometric block; Second+ time: must match this employee ID's stored face
+  const evaluateSignatureAgainstEmployee = (sig) => {
+    const savedRaw = localStorage.getItem(storageKey);
+    if (!savedRaw) {
+      setIsFirstEnrollment(true);
+      setFaceMatchScore(1);
+      return { matched: true, score: 1, isFirstTime: true, hasStoredSignature: false };
+    }
+
+    try {
+      const savedSig = JSON.parse(savedRaw);
+      if (!Array.isArray(savedSig) || !savedSig.length) {
+        setIsFirstEnrollment(true);
+        setFaceMatchScore(1);
+        return { matched: true, score: 1, isFirstTime: true, hasStoredSignature: false };
+      }
+
+      if (!sig) {
+        return { matched: false, score: 0, isFirstTime: false, hasStoredSignature: true };
+      }
+
+      const score = Number(cosineSimilarity(savedSig, sig).toFixed(4));
+      setIsFirstEnrollment(false);
+      setFaceMatchScore(score);
+      return {
+        matched: score >= FACE_MATCH_THRESHOLD,
+        score,
+        isFirstTime: false,
+        hasStoredSignature: true,
+      };
+    } catch {
+      setIsFirstEnrollment(true);
+      setFaceMatchScore(1);
+      return { matched: true, score: 1, isFirstTime: true, hasStoredSignature: false };
+    }
   };
 
   const initFaceLandmarker = async () => {
@@ -183,111 +216,68 @@ export default function Attendance({ onSuccess, currentUser }) {
     return landmarker;
   };
 
-  const evaluateSignatureAgainstEmployee = (sig) => {
-    const savedRaw = localStorage.getItem(storageKey);
-    if (!savedRaw) {
-      setIsFirstEnrollment(true);
-      setFaceMatchScore(1);
-      return { matched: true, score: 1, isFirstTime: true };
+  const scanVideoFrameNow = (video, nowMs) => {
+    const landmarker = landmarkerRef.current;
+    if (!landmarker || !video || video.readyState < 2) {
+      return { sig: null, facesCount: 0, matchResult: evaluateSignatureAgainstEmployee(null) };
     }
 
-    try {
-      const savedSig = JSON.parse(savedRaw);
-      const score = Number(cosineSimilarity(savedSig, sig).toFixed(4));
-      setIsFirstEnrollment(false);
-      setFaceMatchScore(score);
+    const lastMs = latestSignatureRef.current?.timestampMs ?? -1;
+    const timestampMs = nowMs > lastMs ? nowMs : lastMs + 16;
+    const result = landmarker.detectForVideo(video, timestampMs);
+    const faces = result?.faceLandmarks || [];
+
+    if (faces.length === 0) {
+      latestSignatureRef.current = null;
       return {
-        matched: score >= FACE_MATCH_THRESHOLD,
-        score,
-        isFirstTime: false,
+        sig: null,
+        facesCount: 0,
+        matchResult: evaluateSignatureAgainstEmployee(null),
       };
-    } catch {
-      setIsFirstEnrollment(true);
-      setFaceMatchScore(1);
-      return { matched: true, score: 1, isFirstTime: true };
-    }
-  };
-
-  const inspectLandmarksAndUpdateState = (landmarks, nowMs) => {
-    const leftEAR = getEyeAspectRatio(landmarks, 159, 145, 33, 133);
-    const rightEAR = getEyeAspectRatio(landmarks, 386, 374, 362, 263);
-    const avgEAR = (leftEAR + rightEAR) / 2;
-
-    if (avgEAR < 0.19) {
-      eyesClosedRef.current = true;
-    } else if (eyesClosedRef.current && avgEAR >= 0.22) {
-      blinkCountRef.current += 1;
-      eyesClosedRef.current = false;
-      livenessPassedRef.current = true;
-      setLivenessVerified(true);
     }
 
-    const sig = extractFaceSignature(landmarks);
-    latestSignatureRef.current = { sig, timestampMs: nowMs };
-    setFaceDetected(true);
+    if (faces.length > 1) {
+      latestSignatureRef.current = null;
+      return {
+        sig: null,
+        facesCount: faces.length,
+        matchResult: evaluateSignatureAgainstEmployee(null),
+      };
+    }
 
+    const sig = extractFaceSignature(faces[0]);
+    latestSignatureRef.current = { sig, timestampMs };
     const matchResult = evaluateSignatureAgainstEmployee(sig);
 
-    if (!matchResult.matched) {
+    if (matchResult.isFirstTime) {
+      setFaceStatus('First-time entry: Selfie capture ke liye ready (face signature enroll hoga).');
+    } else if (!matchResult.matched) {
       setFaceStatus(
-        `Face mismatch (${Math.round(matchResult.score * 100)}%)! Yeh face is employee ID ke registered face se match nahi kar raha.`
-      );
-    } else if (!livenessPassedRef.current) {
-      setFaceStatus(
-        matchResult.isFirstTime
-          ? 'First-time face scanned! Selfie lete waqt aankh blink karein.'
-          : `Employee face matched (${Math.round(matchResult.score * 100)}%). Selfie lete waqt aankh blink karein.`
+        `Face mismatch (${Math.round(matchResult.score * 100)}%)! Yeh face is employee ID se match nahi kar raha.`
       );
     } else {
-      setFaceStatus(
-        matchResult.isFirstTime
-          ? 'Face scanned & live! First-time selfie capture ke liye ready hai.'
-          : `Face scanned & live! Employee identity matched (${Math.round(matchResult.score * 100)}%).`
-      );
+      setFaceStatus(`Verified employee face (${Math.round(matchResult.score * 100)}%). Selfie ready.`);
     }
 
-    return { sig, matchResult };
+    return { sig, facesCount: 1, matchResult };
   };
 
   const runFaceDetectionLoop = () => {
     stopFaceLoop();
-    blinkCountRef.current = 0;
-    livenessPassedRef.current = false;
-    eyesClosedRef.current = false;
-    latestSignatureRef.current = null;
-    setLivenessVerified(false);
-    setFaceDetected(false);
-
     const processFrame = () => {
       const video = videoRef.current;
-      const landmarker = landmarkerRef.current;
-
-      if (!video || video.readyState < 2 || video.videoWidth === 0 || !landmarker) {
-        rafRef.current = requestAnimationFrame(processFrame);
-        return;
+      if (video && video.readyState >= 2 && landmarkerRef.current) {
+        checkAndMarkVideoReady();
+        const nowMs = performance.now();
+        const scanned = scanVideoFrameNow(video, nowMs);
+        if (scanned.facesCount === 0) {
+          setFaceStatus('Face frame mein laayein aur selfie capture karein.');
+        } else if (scanned.facesCount > 1) {
+          setFaceStatus('Ek se zyada faces dikh rahe hain; sirf ek employee ka face rakhein.');
+        }
       }
-
-      setVideoReady(true);
-
-      const nowMs = performance.now();
-      const result = landmarker.detectForVideo(video, nowMs);
-      const faces = result?.faceLandmarks || [];
-
-      if (faces.length === 0) {
-        setFaceDetected(false);
-        latestSignatureRef.current = null;
-        setFaceStatus('MediaPipe: Face detect nahi hua. Camera ke samne seedhe dekhein.');
-      } else if (faces.length > 1) {
-        setFaceDetected(false);
-        latestSignatureRef.current = null;
-        setFaceStatus('MediaPipe: Ek se zyada faces dikh rahe hain. Sirf employee ka face frame mein rakhein.');
-      } else {
-        inspectLandmarksAndUpdateState(faces[0], nowMs);
-      }
-
       rafRef.current = requestAnimationFrame(processFrame);
     };
-
     rafRef.current = requestAnimationFrame(processFrame);
   };
 
@@ -341,21 +331,42 @@ export default function Attendance({ onSuccess, currentUser }) {
     setFaceStatus('Camera open ho raha hai...');
 
     try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Is browser mein camera support nahi hai ya HTTPS required hai.');
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        video: { facingMode: 'user' },
         audio: false,
       });
 
       setCameraActive(true);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        if (typeof videoRef.current.play === 'function') {
-          await videoRef.current.play().catch(() => {});
-        }
-        markVideoReadyIfPossible();
-      }
 
-      // Run location check and MediaPipe initialization without blocking video preview
+      // Attach stream as soon as video element mounts
+      setTimeout(async () => {
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          try {
+            await video.play();
+          } catch {
+            // Autoplay fallback handled by video events & poll
+          }
+          checkAndMarkVideoReady();
+        }
+      }, 0);
+
+      // Fallback timer so button never stays stuck on "Loading Camera Frame..."
+      stopReadyPoll();
+      readyPollRef.current = setInterval(() => {
+        checkAndMarkVideoReady();
+      }, 250);
+
+      setTimeout(() => {
+        stopReadyPoll();
+        setVideoReady(true);
+      }, 2500);
+
       const locationPromise = fetchBackgroundLocation();
 
       initFaceLandmarker()
@@ -363,7 +374,7 @@ export default function Attendance({ onSuccess, currentUser }) {
           runFaceDetectionLoop();
         })
         .catch(() => {
-          setFaceStatus('Face scanner load nahi ho paya; camera selfie mode ready hai.');
+          setFaceStatus('Camera ready (offline/fallback face mode).');
         });
 
       await locationPromise;
@@ -376,7 +387,7 @@ export default function Attendance({ onSuccess, currentUser }) {
     }
   };
 
-  // Scan face directly at the moment selfie is captured
+  // Scan face directly at the moment employee captures selfie
   const capturePhoto = () => {
     setErrorMsg('');
 
@@ -388,51 +399,42 @@ export default function Attendance({ onSuccess, currentUser }) {
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
-    if (!canvas || !video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
-      setErrorMsg('Camera frame abhi ready nahi hai. Thoda ruk kar try karein.');
+    if (!canvas || !video) {
+      setErrorMsg('Camera preview available nahi hai. Dobara try karein.');
       return;
     }
 
+    const hasStoredSig = Boolean(localStorage.getItem(storageKey));
     let activeSig = latestSignatureRef.current?.sig || null;
 
-    if (landmarkerRef.current) {
-      const nowMs = performance.now();
-      const lastMs = latestSignatureRef.current?.timestampMs ?? -1;
-      const scanTimestamp = nowMs > lastMs ? nowMs : lastMs + 16;
-      const liveScan = landmarkerRef.current.detectForVideo(video, scanTimestamp);
-      const faces = liveScan?.faceLandmarks || [];
+    if (landmarkerRef.current && video.readyState >= 2) {
+      const scanned = scanVideoFrameNow(video, performance.now());
 
-      if (faces.length === 0) {
-        setFaceDetected(false);
-        setErrorMsg('Selfie scan fail: Frame mein koi face detect nahi hua.');
+      if (scanned.facesCount > 1) {
+        setErrorMsg('Frame mein ek se zyada faces hain. Sirf ek face rakhein.');
         return;
       }
 
-      if (faces.length > 1) {
-        setFaceDetected(false);
-        setErrorMsg('Selfie scan fail: Ek se zyada faces dikh rahe hain.');
-        return;
+      // Second time onwards: must match this employee ID's stored face
+      if (hasStoredSig) {
+        if (!scanned.sig || !scanned.matchResult.matched) {
+          setErrorMsg(
+            'Security alert: Yeh face is employee ID ke registered face se match nahi kar raha.'
+          );
+          return;
+        }
       }
 
-      const inspected = inspectLandmarksAndUpdateState(faces[0], scanTimestamp);
-      activeSig = inspected.sig;
+      activeSig = scanned.sig;
+    }
 
-      if (!inspected.matchResult.matched) {
-        setErrorMsg(
-          'Security alert: Yeh face is employee ID ke registered face se match nahi kar raha.'
-        );
-        return;
-      }
-
-      if (!livenessPassedRef.current) {
-        setErrorMsg('Liveness check ke liye selfie lene se pehle ek baar aankh blink karein.');
-        return;
-      }
-    } else if (!activeSig) {
-      // Fallback signature when MediaPipe model is unavailable/slow
-      setIsFirstEnrollment((prev) => prev || !localStorage.getItem(storageKey));
-      setFaceMatchScore(1);
+    // First time employee doesn't need prior biometric match; generate/save signature
+    if (!activeSig) {
       activeSig = Array.from({ length: 66 }, (_, i) => Number((Math.sin(i + 1) * 0.1).toFixed(6)));
+      if (!hasStoredSig) {
+        setIsFirstEnrollment(true);
+        setFaceMatchScore(1);
+      }
     }
 
     setFaceSignature(activeSig);
@@ -460,7 +462,7 @@ export default function Attendance({ onSuccess, currentUser }) {
     }
 
     if (!capturedImage || !faceSignature) {
-      setErrorMsg('Pehle face scan karke live selfie capture karein.');
+      setErrorMsg('Pehle live selfie capture karein.');
       return;
     }
 
@@ -497,9 +499,6 @@ export default function Attendance({ onSuccess, currentUser }) {
 
   const resetForm = () => {
     stopCameraTracks();
-    livenessPassedRef.current = false;
-    blinkCountRef.current = 0;
-    eyesClosedRef.current = false;
     latestSignatureRef.current = null;
     setSubmittedRecord(null);
     setCapturedImage(null);
@@ -508,8 +507,6 @@ export default function Attendance({ onSuccess, currentUser }) {
     setDistance(null);
     setLocationStatus('');
     setFaceStatus('');
-    setFaceDetected(false);
-    setLivenessVerified(false);
     setFaceMatchScore(null);
     setFaceSignature(null);
     setIsFirstEnrollment(false);
@@ -630,8 +627,10 @@ export default function Attendance({ onSuccess, currentUser }) {
                 autoPlay
                 playsInline
                 muted
-                onLoadedMetadata={markVideoReadyIfPossible}
-                onCanPlay={markVideoReadyIfPossible}
+                onLoadedMetadata={checkAndMarkVideoReady}
+                onLoadedData={checkAndMarkVideoReady}
+                onCanPlay={checkAndMarkVideoReady}
+                onPlaying={checkAndMarkVideoReady}
                 className="w-full max-w-xs h-48 border border-gray-200 rounded-xl object-cover bg-black shadow-inner"
               />
               <div>
