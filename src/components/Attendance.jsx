@@ -26,6 +26,7 @@ export default function Attendance({ onSuccess, currentUser }) {
   const [submittedRecord, setSubmittedRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [checkingFlow, setCheckingFlow] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   const videoRef = useRef(null);
@@ -74,6 +75,7 @@ export default function Attendance({ onSuccess, currentUser }) {
       stream.getTracks().forEach((track) => track.stop());
       videoRef.current.srcObject = null;
     }
+    setVideoReady(false);
     setCameraActive(false);
   }, []);
 
@@ -82,6 +84,13 @@ export default function Attendance({ onSuccess, currentUser }) {
       stopCameraTracks();
     };
   }, [stopCameraTracks]);
+
+  const markVideoReadyIfPossible = useCallback(() => {
+    const video = videoRef.current;
+    if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+      setVideoReady(true);
+    }
+  }, []);
 
   const extractFaceSignature = (landmarks) => {
     if (!landmarks || landmarks.length < 468) return null;
@@ -253,10 +262,12 @@ export default function Attendance({ onSuccess, currentUser }) {
       const video = videoRef.current;
       const landmarker = landmarkerRef.current;
 
-      if (!video || video.readyState < 2 || !landmarker) {
+      if (!video || video.readyState < 2 || video.videoWidth === 0 || !landmarker) {
         rafRef.current = requestAnimationFrame(processFrame);
         return;
       }
+
+      setVideoReady(true);
 
       const nowMs = performance.now();
       const result = landmarker.detectForVideo(video, nowMs);
@@ -324,6 +335,7 @@ export default function Attendance({ onSuccess, currentUser }) {
     setErrorMsg('');
     setCapturedImage(null);
     setFaceSignature(null);
+    setVideoReady(false);
     setCheckingFlow(true);
     setLocationStatus('Background mein automatic GPS location check ho rahi hai...');
     setFaceStatus('Camera & MediaPipe face scanner prepare ho rahe hain...');
@@ -337,6 +349,10 @@ export default function Attendance({ onSuccess, currentUser }) {
       setCameraActive(true);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        if (typeof videoRef.current.play === 'function') {
+          await videoRef.current.play().catch(() => {});
+        }
+        markVideoReadyIfPossible();
       }
 
       await fetchBackgroundLocation();
@@ -370,7 +386,7 @@ export default function Attendance({ onSuccess, currentUser }) {
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
-    if (!canvas || !video || video.readyState < 2) {
+    if (!canvas || !video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
       setErrorMsg('Camera frame abhi ready nahi hai. Thoda ruk kar try karein.');
       return;
     }
@@ -612,15 +628,18 @@ export default function Attendance({ onSuccess, currentUser }) {
                 autoPlay
                 playsInline
                 muted
+                onLoadedMetadata={markVideoReadyIfPossible}
+                onCanPlay={markVideoReadyIfPossible}
                 className="w-full max-w-xs h-48 border border-gray-200 rounded-xl object-cover bg-black shadow-inner"
               />
               <div>
                 <button
                   type="button"
+                  disabled={!videoReady || checkingFlow}
                   onClick={capturePhoto}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
                 >
-                  Capture Snapshot
+                  {!videoReady ? 'Loading Camera Frame...' : 'Capture Snapshot'}
                 </button>
               </div>
             </div>

@@ -27,7 +27,6 @@ router.get('/overview', async (_req, res, next) => {
       ),
       pool.query(
         `SELECT r.id, r.ref_code, r.attendance_date, r.check_in_time, r.distance_meters, r.selfie_url, r.status,
-                r.face_verified, r.face_match_score, r.is_first_enrollment,
                 e.name, e.dept, e.id AS employee_id
          FROM attendance_records r
          JOIN employees e ON e.id = r.employee_id
@@ -57,14 +56,11 @@ router.get('/overview', async (_req, res, next) => {
   }
 });
 
-// List employees (includes face enrollment status)
+// List employees
 router.get('/employees', async (_req, res, next) => {
   try {
     const r = await pool.query(
-      `SELECT id, name, email, role, dept, designation, phone, join_date, is_active,
-              reference_selfie_url, face_enrolled_at,
-              (face_signature IS NOT NULL) AS face_enrolled,
-              created_at
+      `SELECT id, name, email, role, dept, designation, phone, join_date, is_active, created_at
        FROM employees
        ORDER BY created_at DESC, id ASC`
     );
@@ -97,7 +93,7 @@ router.post('/employees', async (req, res, next) => {
     const ins = await pool.query(
       `INSERT INTO employees (id, name, email, password_hash, role, dept, designation, phone, join_date, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
-       RETURNING id, name, email, role, dept, designation, phone, join_date, is_active, reference_selfie_url, face_enrolled_at`,
+       RETURNING id, name, email, role, dept, designation, phone, join_date, is_active`,
       [
         id.trim(),
         name.trim(),
@@ -117,34 +113,6 @@ router.post('/employees', async (req, res, next) => {
     if (err.code === '23505') {
       return res.status(409).json({ error: 'Employee ID or email already exists' });
     }
-    next(err);
-  }
-});
-
-// Reset employee face enrollment so next attendance re-enrolls fresh face
-router.post('/employees/:id/reset-face', async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const upd = await pool.query(
-      `UPDATE employees
-       SET face_signature = NULL,
-           reference_selfie_url = NULL,
-           face_enrolled_at = NULL
-       WHERE id = $1
-       RETURNING id, name, reference_selfie_url, face_enrolled_at`,
-      [id]
-    );
-
-    if (upd.rowCount === 0) {
-      return res.status(404).json({ error: 'Employee not found' });
-    }
-
-    await writeAudit(req, `Reset face enrollment for employee ${id}`);
-    res.json({
-      message: 'Employee face enrollment reset successfully',
-      employee: { ...upd.rows[0], face_enrolled: false },
-    });
-  } catch (err) {
     next(err);
   }
 });
@@ -237,7 +205,7 @@ router.put('/policy', async (req, res, next) => {
         Number(max_accuracy_meters || 150),
         window_start,
         window_end,
-        normalizedWeeklyOff, // [] means all 7 days are open
+        normalizedWeeklyOff,
       ]
     );
 
