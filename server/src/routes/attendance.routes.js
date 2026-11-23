@@ -5,29 +5,6 @@ import { haversineMeters, isWithinTimeWindow } from '../services/geo.service.js'
 import { uploadSelfieToImgBB } from '../services/imgbb.service.js';
 
 const router = Router();
-const FACE_MATCH_THRESHOLD = 0.78;
-
-function cosineSimilarity(vecA, vecB) {
-  if (!Array.isArray(vecA) || !Array.isArray(vecB) || vecA.length !== vecB.length || !vecA.length) {
-    return 0;
-  }
-
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < vecA.length; i += 1) {
-    const a = Number(vecA[i]);
-    const b = Number(vecB[i]);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
-    dot += a * b;
-    normA += a * a;
-    normB += b * b;
-  }
-
-  if (!normA || !normB) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
 
 function getIstNow(date = new Date()) {
   const istString = date.toLocaleString('en-CA', {
@@ -66,13 +43,13 @@ router.get('/dashboard', requireAuth, async (req, res, next) => {
     const [polRes, todayRes, recentRes] = await Promise.all([
       pool.query('SELECT * FROM attendance_policies WHERE id = 1'),
       pool.query(
-        `SELECT id, ref_code, attendance_date, check_in_time, distance_meters, selfie_url, status, face_verified, face_match_score, is_first_enrollment
+        `SELECT id, ref_code, attendance_date, check_in_time, distance_meters, selfie_url, status
          FROM attendance_records
          WHERE employee_id = $1 AND attendance_date = $2`,
         [employeeId, todayStr]
       ),
       pool.query(
-        `SELECT id, ref_code, attendance_date, check_in_time, distance_meters, selfie_url, status, face_verified, face_match_score, is_first_enrollment
+        `SELECT id, ref_code, attendance_date, check_in_time, distance_meters, selfie_url, status
          FROM attendance_records
          WHERE employee_id = $1
          ORDER BY attendance_date DESC, check_in_time DESC
@@ -99,18 +76,14 @@ router.get('/dashboard', requireAuth, async (req, res, next) => {
   }
 });
 
-// Mark attendance (GPS + Time Window + Holiday/Weekly-Off + Face Scan/Match + ImgBB Selfie + PostgreSQL)
+// Mark attendance (GPS + Time Window + Holiday/Weekly-Off + ImgBB Selfie + PostgreSQL)
 router.post('/', requireAuth, async (req, res, next) => {
   try {
-    const { lat, lng, accuracy = 0, selfieBase64, faceSignature } = req.body;
+    const { lat, lng, accuracy = 0, selfieBase64 } = req.body;
     const employeeId = req.user.id;
 
     if (typeof lat !== 'number' || typeof lng !== 'number' || !selfieBase64) {
       return res.status(400).json({ error: 'lat, lng, and selfieBase64 are required' });
-    }
-
-    if (!Array.isArray(faceSignature) || faceSignature.length < 20) {
-      return res.status(400).json({ error: 'Valid face scan signature is required' });
     }
 
     const polRes = await pool.query('SELECT * FROM attendance_policies WHERE id = 1');
@@ -169,58 +142,16 @@ router.post('/', requireAuth, async (req, res, next) => {
       });
     }
 
-    // 5. Fetch employee face profile for first-day enrollment or next-day verification
-    const empRes = await pool.query(
-      'SELECT id, face_signature FROM employees WHERE id = $1',
-      [employeeId]
-    );
-    if (empRes.rowCount === 0) {
-      return res.status(404).json({ error: 'Employee not found' });
-    }
-
-    const storedSignature = empRes.rows[0].face_signature;
-    let faceVerified = false;
-    let faceMatchScore = null;
-    let isFirstEnrollment = false;
-
-    if (!storedSignature) {
-      isFirstEnrollment = true;
-      faceVerified = true;
-      faceMatchScore = 1;
-    } else {
-      const score = Number(cosineSimilarity(storedSignature, faceSignature).toFixed(4));
-      if (score < FACE_MATCH_THRESHOLD) {
-        return res.status(403).json({
-          error: `Face verification failed (${Math.round(score * 100)}%). Face does not match registered employee.`,
-        });
-      }
-      faceVerified = true;
-      faceMatchScore = score;
-      isFirstEnrollment = false;
-    }
-
-    // 6. Upload selfie to ImgBB via backend
+    // 5. Upload selfie to ImgBB via backend
     const uploaded = await uploadSelfieToImgBB(selfieBase64, `${employeeId}-${todayStr}`);
     const refCode = `GA-${Date.now().toString(36).toUpperCase()}`;
 
-    // 7. Save first-time enrolled face signature & reference selfie on employee
-    if (isFirstEnrollment) {
-      await pool.query(
-        `UPDATE employees
-         SET face_signature = $1::jsonb,
-             reference_selfie_url = COALESCE($2, reference_selfie_url),
-             face_enrolled_at = NOW()
-         WHERE id = $3`,
-        [JSON.stringify(faceSignature), uploaded.url || null, employeeId]
-      );
-    }
-
-    // 8. Save attendance record in PostgreSQL
+    // 6. Save attendance record in PostgreSQL
     const insRes = await pool.query(
       `INSERT INTO attendance_records
-        (ref_code, entity_type, employee_id, attendance_date, check_in_time, user_lat, user_lng, distance_meters, selfie_url, selfie_delete_url, status, face_verified, face_match_score, is_first_enrollment)
-       VALUES ($1, 'employee', $2, $3, $4, $5, $6, $7, $8, $9, 'Present', $10, $11, $12)
-       RETURNING id, ref_code, employee_id, attendance_date, check_in_time, distance_meters, selfie_url, status, face_verified, face_match_score, is_first_enrollment`,
+        (ref_code, entity_type, employee_id, attendance_date, check_in_time, user_lat, user_lng, distance_meters, selfie_url, selfie_delete_url, status)
+       VALUES ($1, 'employee', $2, $3, $4, $5, $6, $7, $8, $9, 'Present')
+       RETURNING id, ref_code, employee_id, attendance_date, check_in_time, distance_meters, selfie_url, status`,
       [
         refCode,
         employeeId,
@@ -231,9 +162,6 @@ router.post('/', requireAuth, async (req, res, next) => {
         distance,
         uploaded.url,
         uploaded.deleteUrl,
-        faceVerified,
-        faceMatchScore,
-        isFirstEnrollment,
       ]
     );
 
@@ -247,7 +175,7 @@ router.post('/', requireAuth, async (req, res, next) => {
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const r = await pool.query(
-      `SELECT id, ref_code, attendance_date, check_in_time, distance_meters, selfie_url, status, face_verified, face_match_score, is_first_enrollment
+      `SELECT id, ref_code, attendance_date, check_in_time, distance_meters, selfie_url, status
        FROM attendance_records
        WHERE employee_id = $1
        ORDER BY attendance_date DESC, check_in_time DESC`,
