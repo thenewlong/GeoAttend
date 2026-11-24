@@ -11,7 +11,6 @@ export default function Attendance({ onSuccess }) {
   const [coords, setCoords] = useState(null);
   const [distance, setDistance] = useState(null);
   const [isInside, setIsInside] = useState(false);
-  const [checkingLoc, setCheckingLoc] = useState(false);
   const [capturedImage, setCapturedImage] = useState(null);
   const [submittedRecord, setSubmittedRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -45,6 +44,7 @@ export default function Attendance({ onSuccess }) {
     setCameraActive(false);
   }, []);
 
+  // Attach active media stream once <video> element is mounted in DOM
   useEffect(() => {
     if (cameraActive && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
@@ -60,13 +60,11 @@ export default function Attendance({ onSuccess }) {
 
   const verifyLocation = () => {
     setErrorMsg('');
-    setCheckingLoc(true);
-    setLocationStatus('Checking GPS...');
+    setLocationStatus('Fetching real-time GPS coordinates...');
 
     if (!navigator.geolocation) {
-      setCheckingLoc(false);
       setIsInside(false);
-      setLocationStatus('GPS not supported.');
+      setLocationStatus('Geolocation is not supported by your browser.');
       return;
     }
 
@@ -79,18 +77,20 @@ export default function Attendance({ onSuccess }) {
 
         setCoords({ lat: userLat, lng: userLng, accuracy });
         setDistance(dist);
-        setCheckingLoc(false);
 
         if (dist <= ALLOWED_RADIUS) {
           setIsInside(true);
-          setLocationStatus(`Inside zone (${dist}m)`);
+          setLocationStatus(
+            `Verified! Inside NIELIT Agartala zone (${dist}m away, accuracy ±${Math.round(accuracy)}m).`
+          );
         } else {
           setIsInside(false);
-          setLocationStatus(`Outside limit (${dist}m > ${ALLOWED_RADIUS}m)`);
+          setLocationStatus(
+            `Outside radius! You are ${dist}m away (Limit: ${ALLOWED_RADIUS}m).`
+          );
         }
       },
       (error) => {
-        setCheckingLoc(false);
         setIsInside(false);
         setLocationStatus('Location error: ' + error.message);
       },
@@ -112,7 +112,7 @@ export default function Attendance({ onSuccess }) {
       setCameraActive(true);
     } catch (err) {
       stopCameraTracks();
-      setErrorMsg('Camera error: ' + err.message);
+      setErrorMsg('Camera access denied or unavailable: ' + err.message);
     }
   };
 
@@ -129,7 +129,8 @@ export default function Attendance({ onSuccess }) {
     const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, width, height);
 
-    setCapturedImage(canvas.toDataURL('image/jpeg', 0.8));
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    setCapturedImage(dataUrl);
     stopCameraTracks();
   };
 
@@ -138,11 +139,12 @@ export default function Attendance({ onSuccess }) {
     setErrorMsg('');
 
     if (!coords || !isInside) {
-      setErrorMsg('Verify location inside campus first.');
+      setErrorMsg('Pehle campus geofence ke andar GPS location verify karein.');
       return;
     }
+
     if (!capturedImage) {
-      setErrorMsg('Capture live selfie first.');
+      setErrorMsg('Pehle live selfie capture karein.');
       return;
     }
 
@@ -163,7 +165,7 @@ export default function Attendance({ onSuccess }) {
         onSuccess(data.record);
       }
     } catch (err) {
-      setErrorMsg(err.message || 'Submission failed.');
+      setErrorMsg(err.message || 'Attendance submission failed.');
     } finally {
       setSubmitting(false);
     }
@@ -182,30 +184,30 @@ export default function Attendance({ onSuccess }) {
 
   if (submittedRecord) {
     return (
-      <div className="max-w-md sm:max-w-lg mx-auto bg-white border-2 border-[#191D19] p-5 sm:p-6 rounded-2xl shadow-[4px_4px_0_#191D19] text-center space-y-4 mt-4">
-        <div className="w-11 h-11 bg-[#FFD84D] text-[#191D19] rounded-full flex items-center justify-center mx-auto text-lg font-black border-2 border-[#191D19]">
+      <div className="max-w-xl mx-auto bg-white border border-gray-200 p-8 rounded-2xl shadow-sm text-center space-y-5 mt-8">
+        <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold border border-emerald-200">
           ✓
         </div>
-        <div>
-          <h2 className="text-xl font-black text-[#191D19]">Attendance Marked</h2>
-          <p className="text-xs sm:text-sm text-[#4A5049] mt-1 font-medium">
-            Ref: <b>{submittedRecord.ref_code}</b> · {submittedRecord.distance_meters}m ·{' '}
-            <span className="text-[#4E6B47] font-bold">{submittedRecord.status}</span>
-          </p>
-        </div>
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+          Attendance Logged Successfully
+        </h2>
+        <p className="text-sm text-gray-600">
+          Ref: <b>{submittedRecord.ref_code}</b> · Distance: <b>{submittedRecord.distance_meters}m</b> · Status:{' '}
+          <span className="text-emerald-700 font-semibold">{submittedRecord.status}</span>
+        </p>
         {submittedRecord.selfie_url && (
           <img
             src={submittedRecord.selfie_url}
-            alt="Selfie"
-            className="w-28 h-20 object-cover rounded-xl mx-auto border-2 border-[#191D19]"
+            alt="Uploaded selfie"
+            className="w-32 h-24 object-cover rounded-xl mx-auto border border-gray-200 shadow-sm"
           />
         )}
         <button
           type="button"
           onClick={resetForm}
-          className="w-full sm:w-auto bg-[#6B8A63] hover:bg-[#5B7854] text-white font-bold text-xs sm:text-sm px-5 py-2.5 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+          className="bg-gray-900 hover:bg-gray-800 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-all cursor-pointer"
         >
-          Done
+          Mark Another Entry
         </button>
       </div>
     );
@@ -214,127 +216,139 @@ export default function Attendance({ onSuccess }) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="max-w-md sm:max-w-xl mx-auto bg-[#F8F8F3] sm:bg-white border-0 sm:border-2 sm:border-[#191D19] p-3 sm:p-6 rounded-2xl sm:shadow-[5px_5px_0_#191D19] space-y-4 mt-2 sm:mt-5 text-[#191D19]"
+      className="max-w-2xl mx-auto bg-white border border-gray-200/80 p-8 rounded-2xl shadow-sm space-y-6 mt-6"
     >
-      {/* Compact Header */}
-      <div className="flex items-center justify-between gap-2 pb-2 border-b-2 border-[#191D19]">
-        <div>
-          <h2 className="text-xl sm:text-2xl font-black tracking-tight">Mark Attendance</h2>
-          <p className="text-xs text-[#5A6058] font-medium">NIELIT Agartala · GPS & Selfie</p>
+      <div className="border-b border-gray-100 pb-5">
+        <div className="flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span className="text-xs font-semibold tracking-wider text-emerald-600 uppercase">
+            Employee Verification Portal
+          </span>
         </div>
-        <span className="bg-[#E8EFE4] border-2 border-[#191D19] rounded-lg px-2.5 py-1 text-[11px] font-extrabold">
-          {isInside ? `${distance}m OK` : 'Pending'}
-        </span>
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900 mt-1">
+          Mark Attendance
+        </h2>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Authenticate via GPS geofence and live selfie (uploaded securely via backend to ImgBB & PostgreSQL).
+        </p>
       </div>
 
       {errorMsg && (
-        <div className="p-3 rounded-xl bg-[#FFE5E5] border-2 border-[#191D19] text-[#8A1C1C] text-xs font-bold">
+        <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
           {errorMsg}
         </div>
       )}
 
-      {/* Desktop 2-col, Mobile 1-col Compact Steps */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-        {/* Step 1: Location */}
-        <div className="bg-white border-2 border-[#191D19] rounded-2xl p-4 shadow-[3px_3px_0_#191D19] flex flex-col justify-between gap-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-black uppercase tracking-wide">1. Location</span>
-            {isInside && (
-              <span className="bg-[#FFD84D] border border-[#191D19] rounded-md px-2 py-0.5 text-[10px] font-extrabold">
-                Verified
-              </span>
-            )}
-          </div>
-
-          <p className="text-xs text-[#4A5049] font-medium min-h-[18px]">
-            {locationStatus || 'Tap to check campus radius.'}
-          </p>
-
-          <button
-            type="button"
-            disabled={checkingLoc}
-            onClick={verifyLocation}
-            className="w-full bg-[#F2F4EC] hover:bg-[#E8EFE4] disabled:opacity-50 text-[#191D19] font-bold text-xs py-2.5 px-3 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
-          >
-            {checkingLoc ? 'Checking...' : isInside ? 'Recheck GPS' : 'Check Location'}
-          </button>
+      {/* Step 1: GPS Geofence Verification */}
+      <div className="border border-gray-200/80 p-5 rounded-xl bg-gray-50/40 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-medium">
+              1
+            </span>
+            Geofence Verification (NIELIT Agartala)
+          </h3>
+          {isInside && (
+            <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs px-3 py-1 rounded-full font-medium">
+              Verified ({distance}m)
+            </span>
+          )}
         </div>
 
-        {/* Step 2: Selfie */}
-        <div className="bg-white border-2 border-[#191D19] rounded-2xl p-4 shadow-[3px_3px_0_#191D19] flex flex-col justify-between gap-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-black uppercase tracking-wide">2. Live Selfie</span>
-            {capturedImage && (
-              <span className="bg-[#E8EFE4] border border-[#191D19] rounded-md px-2 py-0.5 text-[10px] font-extrabold">
-                Ready
-              </span>
-            )}
-          </div>
+        <button
+          type="button"
+          onClick={verifyLocation}
+          className="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+        >
+          Check My Location
+        </button>
+
+        {locationStatus && (
+          <p className="text-xs font-medium text-gray-600 bg-white border border-gray-200 p-2.5 rounded-lg">
+            {locationStatus}
+          </p>
+        )}
+      </div>
+
+      {/* Step 2: Live Selfie Capture */}
+      {isInside && (
+        <div className="border border-gray-200/80 p-5 rounded-xl bg-gray-50/40 space-y-4">
+          <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-medium">
+              2
+            </span>
+            Live Selfie Capture
+          </h3>
 
           {!cameraActive && !capturedImage && (
-            <>
-              <p className="text-xs text-[#4A5049] font-medium min-h-[18px]">
-                {isInside ? 'Camera ready for snapshot.' : 'Verify location first.'}
-              </p>
-              <button
-                type="button"
-                disabled={!isInside}
-                onClick={startCamera}
-                className="w-full bg-[#6B8A63] hover:bg-[#5B7854] disabled:opacity-45 text-white font-bold text-xs py-2.5 px-3 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
-              >
-                Open Camera
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={startCamera}
+              className="bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+            >
+              Open Camera Feed
+            </button>
           )}
 
           {cameraActive && (
-            <div className="space-y-2.5">
+            <div className="space-y-3">
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-36 sm:h-40 rounded-xl border-2 border-[#191D19] object-cover bg-black"
+                className="w-full max-w-xs h-48 border border-gray-200 rounded-xl object-cover bg-black shadow-inner"
               />
-              <button
-                type="button"
-                onClick={capturePhoto}
-                className="w-full bg-[#FFD84D] hover:bg-[#F5CC36] text-[#191D19] font-extrabold text-xs py-2 px-3 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
-              >
-                Capture Photo
-              </button>
+              <div>
+                <button
+                  type="button"
+                  onClick={capturePhoto}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+                >
+                  Capture Snapshot
+                </button>
+              </div>
             </div>
           )}
 
+          <canvas ref={canvasRef} className="hidden" />
+
           {capturedImage && (
-            <div className="flex items-center justify-between gap-3">
-              <img
-                src={capturedImage}
-                alt="Preview"
-                className="w-20 h-16 rounded-xl border-2 border-[#191D19] object-cover shrink-0"
-              />
-              <button
-                type="button"
-                onClick={startCamera}
-                className="bg-[#F2F4EC] hover:bg-[#E8EFE4] text-[#191D19] font-bold text-xs px-3 py-2 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
-              >
-                Retake
-              </button>
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 p-2 rounded-lg inline-block">
+                ✓ Snapshot ready for backend upload
+              </p>
+              <div>
+                <img
+                  src={capturedImage}
+                  alt="Selfie preview"
+                  className="w-32 h-24 border border-gray-200 rounded-xl object-cover shadow-sm"
+                />
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="text-xs text-gray-600 hover:text-gray-900 font-medium underline cursor-pointer"
+                >
+                  Retake photo
+                </button>
+              </div>
             </div>
           )}
         </div>
-      </div>
+      )}
 
-      <canvas ref={canvasRef} className="hidden" />
-
-      {/* Submit */}
-      <button
-        type="submit"
-        disabled={submitting || !isInside || !capturedImage}
-        className="w-full bg-[#6B8A63] hover:bg-[#5B7854] disabled:opacity-45 text-white font-extrabold text-sm py-3 rounded-xl border-2 border-[#191D19] shadow-[4px_4px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
-      >
-        {submitting ? 'Submitting...' : 'Submit Attendance'}
-      </button>
+      {/* Final Submit */}
+      {isInside && capturedImage && (
+        <button
+          type="submit"
+          disabled={submitting}
+          className="w-full bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white p-3.5 rounded-xl font-semibold text-sm shadow-sm tracking-wide transition-all cursor-pointer"
+        >
+          {submitting ? 'Uploading to ImgBB & Saving to DB...' : 'Submit Verified Attendance'}
+        </button>
+      )}
     </form>
   );
 }
