@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+// Apne project folder ke hisaab se logo ka path/extension (.png, .jpg, .svg, .webp) set karein
+import brandLogo from '../assets/logo.jpeg';
 
 function useScrollReveal() {
   const ref = useRef(null);
@@ -196,17 +198,14 @@ export default function LandingPage({ onOpenLogin }) {
     <div className="min-h-screen bg-[#F8F8F3] text-[#191D19] selection:bg-[#FFD84D] selection:text-[#191D19]">
       {/* Top Navbar */}
       <header className="sticky top-0 z-30 bg-[#F8F8F3]/95 backdrop-blur-sm border-b-2 border-[#191D19]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 shrink-0 rounded-xl bg-[#4E6B47] border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] flex items-center justify-center text-white font-bold text-sm">
-              ⌖
-            </div>
-            <div className="truncate">
-              <div className="font-extrabold text-sm sm:text-base tracking-tight leading-none truncate">
-                NIELIT GeoAttend
-              </div>
-              
-            </div>
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-20 flex items-center justify-between gap-3">
+          {/* Clean Logo Only (Mobile + PC Responsive Size) */}
+          <div className="flex items-center shrink-0">
+            <img
+              src={brandLogo}
+              alt="Logo"
+              className="h-9 sm:h-12 w-auto max-w-[140px] sm:max-w-[200px] object-contain"
+            />
           </div>
 
           <nav className="hidden md:flex items-center gap-6 text-sm font-semibold text-[#2E352D]">
@@ -234,11 +233,10 @@ export default function LandingPage({ onOpenLogin }) {
           </nav>
 
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-            
             <button
               type="button"
               onClick={onOpenLogin}
-              className="bg-[#4E6B47] hover:bg-[#425B3C] text-white font-bold text-xs sm:text-sm px-3.5 sm:px-4 py-2 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+              className="bg-[#4E6B47] hover:bg-[#425B3C] text-white font-bold text-xs sm:text-sm px-3.5 sm:px-5 py-2 sm:py-2.5 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
             >
               Get Started
             </button>
