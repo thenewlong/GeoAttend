@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiRequest } from '../api/client';
 import Attendance from './Attendance';
+import EmployeeProfile from './EmployeeProfile';
 
 export default function EmployeeMobileApp({ user, onLogout }) {
   const [activeTab, setActiveTab] = useState('home'); // 'home' | 'history' | 'profile' | 'mark'
@@ -357,28 +358,12 @@ export default function EmployeeMobileApp({ user, onLogout }) {
 
         {/* PROFILE TAB */}
         {activeTab === 'profile' && (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-extrabold">My Profile</h2>
-            <div className="bg-white border-2 border-[#191D19] rounded-2xl p-6 shadow-[5px_5px_0_#191D19] space-y-4">
-              <div className="w-16 h-16 rounded-full bg-[#FFD84D] border-2 border-[#191D19] flex items-center justify-center text-2xl font-extrabold">
-                {(user?.name || 'E')[0]}
-              </div>
-              <div>
-                <div className="text-xl font-extrabold">{user?.name}</div>
-                <div className="text-xs font-bold text-[#5E645D] mt-0.5">
-                  {user?.id} • {user?.dept} • {user?.designation}
-                </div>
-                <div className="text-xs text-[#5E645D] mt-1">{user?.email}</div>
-              </div>
-              <button
-                type="button"
-                onClick={onLogout}
-                className="w-full bg-[#E4572E] text-white font-bold text-sm py-3 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] cursor-pointer"
-              >
-                Sign Out
-              </button>
-            </div>
-          </div>
+          <EmployeeProfile
+            user={user}
+            records={records}
+            onLogout={onLogout}
+            onBackHome={() => setActiveTab('home')}
+          />
         )}
       </main>
 

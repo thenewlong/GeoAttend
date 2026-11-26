@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiRequest } from '../api/client';
 
 const WEEK_DAYS = [
@@ -11,15 +11,62 @@ const WEEK_DAYS = [
   { id: 6, label: 'Saturday' },
 ];
 
+function formatMonthLabel(ymKey) {
+  if (!ymKey || ymKey === 'all') return 'All Months';
+  const [y, m] = ymKey.split('-').map(Number);
+  if (!y || !m) return ymKey;
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', {
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function getMonthWorkingDaysCount(ymKey, weeklyOff = [], holidays = [], upToDateStr = '') {
+  if (!ymKey || ymKey === 'all') return 0;
+  const [y, m] = ymKey.split('-').map(Number);
+  if (!y || !m) return 0;
+
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const holidayMap = new Map(
+    (holidays || []).map((h) => [String(h.holiday_date || '').slice(0, 10), h])
+  );
+  const offSet = new Set((weeklyOff || []).map(Number));
+
+  let workingDays = 0;
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const mm = String(m).padStart(2, '0');
+    const dd = String(day).padStart(2, '0');
+    const dateStr = `${y}-${mm}-${dd}`;
+    if (upToDateStr && dateStr > upToDateStr) break;
+
+    const dt = new Date(y, m - 1, day);
+    const dow = dt.getDay();
+    const hol = holidayMap.get(dateStr);
+
+    if (hol) {
+      if (hol.is_working_override) workingDays += 1;
+    } else if (!offSet.has(dow)) {
+      workingDays += 1;
+    }
+  }
+  return workingDays;
+}
+
 export default function AdminDashboard() {
-  const [tab, setTab] = useState('overview'); // 'overview' | 'employees' | 'policy' | 'holidays'
+  const [tab, setTab] = useState('overview'); // 'overview' | 'attendance' | 'employees' | 'policy' | 'holidays'
   const [overview, setOverview] = useState(null);
+  const [allRecords, setAllRecords] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [policy, setPolicy] = useState(null);
   const [holidays, setHolidays] = useState([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+
+  // Employee attendance inspector filters
+  const defaultMonth = new Date().toISOString().slice(0, 7);
+  const [selectedMonth, setSelectedMonth] = useState(defaultMonth);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
 
   // New employee form state
   const [form, setForm] = useState({
@@ -49,7 +96,25 @@ export default function AdminDashboard() {
         apiRequest('/admin/policy'),
         apiRequest('/admin/holidays'),
       ]);
+
+      let extraRecords = [];
+      try {
+        const recData = await apiRequest('/admin/records');
+        if (Array.isArray(recData?.records)) {
+          extraRecords = recData.records;
+        }
+      } catch {
+        // Optional endpoint fallback; overview records will still be used
+      }
+
+      const mergedMap = new Map();
+      for (const r of [...(ovData?.recentRecords || []), ...extraRecords]) {
+        const key = r.id ?? `${r.employee_id}-${String(r.attendance_date).slice(0, 10)}-${r.check_in_time}`;
+        mergedMap.set(key, r);
+      }
+
       setOverview(ovData);
+      setAllRecords(Array.from(mergedMap.values()));
       setEmployees(empData.employees || []);
       setPolicy(
         polData.policy
@@ -67,6 +132,78 @@ export default function AdminDashboard() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const employeeListOnly = useMemo(
+    () => employees.filter((u) => u.role === 'employee'),
+    [employees]
+  );
+
+  const availableMonths = useMemo(() => {
+    const set = new Set([defaultMonth]);
+    for (const r of allRecords) {
+      const ym = String(r.attendance_date || '').slice(0, 7);
+      if (ym) set.add(ym);
+    }
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [allRecords, defaultMonth]);
+
+  const perEmployeeSummary = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const totalWorkingDays = getMonthWorkingDaysCount(
+      selectedMonth,
+      policy?.weekly_off || [],
+      holidays,
+      todayStr
+    );
+
+    const monthRecords =
+      selectedMonth === 'all'
+        ? allRecords
+        : allRecords.filter((r) => String(r.attendance_date || '').slice(0, 7) === selectedMonth);
+
+    return employeeListOnly.map((emp) => {
+      const empRecs = monthRecords.filter((r) => String(r.employee_id) === String(emp.id));
+      const uniquePresentDates = new Set(
+        empRecs
+          .filter((r) => String(r.status || 'Present').toLowerCase() !== 'absent')
+          .map((r) => String(r.attendance_date || '').slice(0, 10))
+          .filter(Boolean)
+      );
+
+      const presentDays = uniquePresentDates.size;
+      const absentDays =
+        selectedMonth === 'all'
+          ? 0
+          : Math.max(0, totalWorkingDays - presentDays);
+
+      return {
+        employee: emp,
+        presentDays,
+        absentDays,
+        totalWorkingDays,
+        records: empRecs,
+      };
+    });
+  }, [employeeListOnly, allRecords, selectedMonth, policy, holidays]);
+
+  const filteredEmployeeLogs = useMemo(() => {
+    const monthRecords =
+      selectedMonth === 'all'
+        ? allRecords
+        : allRecords.filter((r) => String(r.attendance_date || '').slice(0, 7) === selectedMonth);
+
+    const byEmp =
+      selectedEmployeeId === 'all'
+        ? monthRecords
+        : monthRecords.filter((r) => String(r.employee_id) === String(selectedEmployeeId));
+
+    return [...byEmp].sort((a, b) => {
+      const dA = String(a.attendance_date || '').slice(0, 10);
+      const dB = String(b.attendance_date || '').slice(0, 10);
+      if (dA !== dB) return dB.localeCompare(dA);
+      return String(b.check_in_time || '').localeCompare(String(a.check_in_time || ''));
+    });
+  }, [allRecords, selectedMonth, selectedEmployeeId]);
 
   const handleAddEmployee = async (e) => {
     e.preventDefault();
@@ -178,7 +315,7 @@ export default function AdminDashboard() {
           <h2 className="text-2xl font-bold text-gray-900">GeoAttend Administration</h2>
         </div>
         <div className="flex flex-wrap gap-2">
-          {['overview', 'employees', 'policy', 'holidays'].map((t) => (
+          {['overview', 'attendance', 'employees', 'policy', 'holidays'].map((t) => (
             <button
               key={t}
               type="button"
@@ -287,7 +424,180 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* TAB 2: EMPLOYEES */}
+      {/* TAB 2: EVERY EMPLOYEE ATTENDANCE (PRESENT / ABSENT / MONTH / DATE) */}
+      {tab === 'attendance' && (
+        <div className="space-y-6">
+          {/* Filters */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
+            <div className="flex flex-wrap gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Month</label>
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white"
+                >
+                  <option value="all">All Months</option>
+                  {availableMonths.map((ym) => (
+                    <option key={ym} value={ym}>
+                      {formatMonthLabel(ym)} ({ym})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Employee</label>
+                <select
+                  value={selectedEmployeeId}
+                  onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                  className="border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white"
+                >
+                  <option value="all">All Employees ({employeeListOnly.length})</option>
+                  {employeeListOnly.map((emp) => (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.name} ({emp.id})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="text-xs text-gray-500">
+              Month: <b>{formatMonthLabel(selectedMonth)}</b>
+            </div>
+          </div>
+
+          {/* Per-Employee Present / Absent Summary Table */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4">
+            <h3 className="font-bold text-gray-900 text-base">
+              Employee-wise Present & Absent Summary ({formatMonthLabel(selectedMonth)})
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                    <th className="py-2 pr-4">Employee</th>
+                    <th className="py-2 pr-4">Dept</th>
+                    <th className="py-2 pr-4">Present Days</th>
+                    <th className="py-2 pr-4">Absent Days</th>
+                    <th className="py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perEmployeeSummary.map((item) => {
+                    const isSelected = String(selectedEmployeeId) === String(item.employee.id);
+                    return (
+                      <tr key={item.employee.id} className="border-b border-gray-100">
+                        <td className="py-3 pr-4 font-medium text-gray-900">
+                          {item.employee.name}{' '}
+                          <span className="text-xs text-gray-400">({item.employee.id})</span>
+                        </td>
+                        <td className="py-3 pr-4 text-gray-600">{item.employee.dept || 'General'}</td>
+                        <td className="py-3 pr-4">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700">
+                            {item.presentDays} Present
+                          </span>
+                        </td>
+                        <td className="py-3 pr-4">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700">
+                            {selectedMonth === 'all' ? '—' : `${item.absentDays} Absent`}
+                          </span>
+                        </td>
+                        <td className="py-3">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedEmployeeId(isSelected ? 'all' : item.employee.id)
+                            }
+                            className="px-3 py-1 rounded-lg border border-gray-300 text-xs font-medium cursor-pointer"
+                          >
+                            {isSelected ? 'Show All' : 'View Dates'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {perEmployeeSummary.length === 0 && (
+                    <tr>
+                      <td colSpan="5" className="py-6 text-center text-gray-400 text-xs">
+                        Koi employee record nahi mila.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Date-wise Attendance Log for Selected Employee / All */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4">
+            <h3 className="font-bold text-gray-900 text-base">
+              Date-wise Attendance Entries ({filteredEmployeeLogs.length})
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                    <th className="py-2 pr-4">Employee</th>
+                    <th className="py-2 pr-4">Date</th>
+                    <th className="py-2 pr-4">Time</th>
+                    <th className="py-2 pr-4">Distance</th>
+                    <th className="py-2 pr-4">Selfie</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredEmployeeLogs.map((r) => (
+                    <tr key={r.id ?? `${r.employee_id}-${r.attendance_date}-${r.check_in_time}`} className="border-b border-gray-100">
+                      <td className="py-3 pr-4 font-medium text-gray-900">
+                        {r.name || r.employee_id}{' '}
+                        <span className="text-xs text-gray-400">({r.employee_id})</span>
+                      </td>
+                      <td className="py-3 pr-4 text-gray-600">
+                        {String(r.attendance_date || '').slice(0, 10)}
+                      </td>
+                      <td className="py-3 pr-4 text-gray-600">
+                        {String(r.check_in_time || '').slice(0, 5)}
+                      </td>
+                      <td className="py-3 pr-4 text-gray-600">
+                        {r.distance_meters != null ? `${r.distance_meters}m` : '—'}
+                      </td>
+                      <td className="py-3 pr-4">
+                        {r.selfie_url ? (
+                          <a href={r.selfie_url} target="_blank" rel="noreferrer">
+                            <img
+                              src={r.selfie_url}
+                              alt={r.name || r.employee_id}
+                              className="w-12 h-10 object-cover rounded-lg border border-gray-200"
+                            />
+                          </a>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="py-3">
+                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700">
+                          {r.status || 'Present'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredEmployeeLogs.length === 0 && (
+                    <tr>
+                      <td colSpan="6" className="py-6 text-center text-gray-400 text-xs">
+                        Is filter ke liye koi attendance date record nahi hai.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: EMPLOYEES */}
       {tab === 'employees' && (
         <div className="space-y-6">
           <form
@@ -396,7 +706,7 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* TAB 3: POLICY & WEEKLY OFF */}
+      {/* TAB 4: POLICY & WEEKLY OFF */}
       {tab === 'policy' && policy && (
         <form
           onSubmit={handleSavePolicy}
@@ -508,7 +818,7 @@ export default function AdminDashboard() {
         </form>
       )}
 
-      {/* TAB 4: HOLIDAYS & SPECIAL WORKING DAYS */}
+      {/* TAB 5: HOLIDAYS & SPECIAL WORKING DAYS */}
       {tab === 'holidays' && (
         <div className="space-y-6">
           <form
