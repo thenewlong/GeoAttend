@@ -12,6 +12,7 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.3",
     "@tailwindcss/postcss": "^4.3.4",
+    "@vladmandic/face-api": "^1.7.15",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^18.0.10",
