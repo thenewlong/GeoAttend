@@ -1,5 +1,18 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import * as faceapi from '@vladmandic/face-api';
 import { apiRequest } from '../api/client';
+
+let faceModelsLoaded = false;
+
+async function ensureFaceModelsLoaded() {
+  if (faceModelsLoaded) return;
+  await Promise.all([
+    faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
+    faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+    faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
+  ]);
+  faceModelsLoaded = true;
+}
 
 export default function Attendance({ onSuccess }) {
   // NIELIT Agartala coordinates
@@ -13,6 +26,9 @@ export default function Attendance({ onSuccess }) {
   const [isInside, setIsInside] = useState(false);
   const [checkingLoc, setCheckingLoc] = useState(false);
   const [capturedImage, setCapturedImage] = useState(null);
+  const [faceDescriptor, setFaceDescriptor] = useState(null);
+  const [faceStatus, setFaceStatus] = useState('');
+  const [scanningFace, setScanningFace] = useState(false);
   const [submittedRecord, setSubmittedRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -106,6 +122,8 @@ export default function Attendance({ onSuccess }) {
   const startCamera = async () => {
     setErrorMsg('');
     setCapturedImage(null);
+    setFaceDescriptor(null);
+    setFaceStatus('');
     stopCameraTracks();
 
     try {
@@ -121,7 +139,7 @@ export default function Attendance({ onSuccess }) {
     }
   };
 
-  const capturePhoto = () => {
+  const capturePhoto = async () => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video) return;
@@ -134,9 +152,48 @@ export default function Attendance({ onSuccess }) {
     const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, width, height);
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-    setCapturedImage(dataUrl);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
     stopCameraTracks();
+
+    try {
+      setScanningFace(true);
+      setErrorMsg('');
+      setFaceStatus('Verifying live face geometry...');
+
+      await ensureFaceModelsLoaded();
+      const detections = await faceapi
+        .detectAllFaces(canvas)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (detections.length === 0) {
+        setCapturedImage(null);
+        setFaceDescriptor(null);
+        setFaceStatus('');
+        setErrorMsg('Face detect nahi hua. Clear front selfie ke liye Retake karein.');
+        return;
+      }
+
+      if (detections.length > 1) {
+        setCapturedImage(null);
+        setFaceDescriptor(null);
+        setFaceStatus('');
+        setErrorMsg('Frame mein sirf 1 employee ka face hona chahiye.');
+        return;
+      }
+
+      const descriptorArray = Array.from(detections[0].descriptor);
+      setCapturedImage(dataUrl);
+      setFaceDescriptor(descriptorArray);
+      setFaceStatus('Live face captured & ready for backend match');
+    } catch (err) {
+      setCapturedImage(null);
+      setFaceDescriptor(null);
+      setFaceStatus('');
+      setErrorMsg(err.message || 'Face scan failed. Check /models folder.');
+    } finally {
+      setScanningFace(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -148,8 +205,8 @@ export default function Attendance({ onSuccess }) {
       return;
     }
 
-    if (!capturedImage) {
-      setErrorMsg('Pehle live selfie capture karein.');
+    if (!capturedImage || !Array.isArray(faceDescriptor) || faceDescriptor.length !== 128) {
+      setErrorMsg('Pehle valid live selfie aur face scan complete karein.');
       return;
     }
 
@@ -162,6 +219,7 @@ export default function Attendance({ onSuccess }) {
           lng: coords.lng,
           accuracy: coords.accuracy,
           selfieBase64: capturedImage,
+          faceDescriptor,
         },
       });
 
@@ -180,6 +238,9 @@ export default function Attendance({ onSuccess }) {
     stopCameraTracks();
     setSubmittedRecord(null);
     setCapturedImage(null);
+    setFaceDescriptor(null);
+    setFaceStatus('');
+    setScanningFace(false);
     setIsInside(false);
     setCoords(null);
     setDistance(null);
@@ -280,7 +341,7 @@ export default function Attendance({ onSuccess }) {
           </button>
         </div>
 
-        {/* Step 2: Live Selfie Capture */}
+        {/* Step 2: Live Selfie Capture + Face Descriptor */}
         <div className="bg-white border-2 border-[#191D19] rounded-2xl p-4 sm:p-5 shadow-[4px_4px_0_#191D19] flex flex-col justify-between gap-3">
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
@@ -290,16 +351,20 @@ export default function Attendance({ onSuccess }) {
                 </span>
                 Live Selfie
               </span>
-              {capturedImage && (
+              {capturedImage && faceDescriptor && (
                 <span className="bg-[#E8EFE4] border border-[#191D19] rounded-lg px-2 py-0.5 text-[10px] font-extrabold">
-                  Captured
+                  Face Ready
                 </span>
               )}
             </div>
 
             {!cameraActive && !capturedImage && (
               <p className="text-xs text-[#4A5049] font-medium leading-relaxed">
-                {isInside ? 'Open front camera to take selfie.' : 'Verify location first to unlock camera.'}
+                {scanningFace
+                  ? faceStatus
+                  : isInside
+                  ? 'Open front camera to take live selfie.'
+                  : 'Verify location first to unlock camera.'}
               </p>
             )}
           </div>
@@ -307,11 +372,11 @@ export default function Attendance({ onSuccess }) {
           {!cameraActive && !capturedImage && (
             <button
               type="button"
-              disabled={!isInside}
+              disabled={!isInside || scanningFace}
               onClick={startCamera}
               className="w-full bg-[#6B8A63] hover:bg-[#5B7854] disabled:opacity-45 text-white font-bold text-xs sm:text-sm py-2.5 px-4 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
             >
-              Open Camera Feed
+              {scanningFace ? 'Scanning Face...' : 'Open Camera Feed'}
             </button>
           )}
 
@@ -326,28 +391,35 @@ export default function Attendance({ onSuccess }) {
               />
               <button
                 type="button"
+                disabled={scanningFace}
                 onClick={capturePhoto}
-                className="w-full bg-[#FFD84D] hover:bg-[#F5CC36] text-[#191D19] font-extrabold text-xs sm:text-sm py-2.5 px-4 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+                className="w-full bg-[#FFD84D] hover:bg-[#F5CC36] disabled:opacity-50 text-[#191D19] font-extrabold text-xs sm:text-sm py-2.5 px-4 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
               >
-                Capture Snapshot
+                {scanningFace ? 'Scanning Face...' : 'Capture Snapshot'}
               </button>
             </div>
           )}
 
           {capturedImage && (
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <img
-                src={capturedImage}
-                alt="Selfie preview"
-                className="w-24 h-20 border-2 border-[#191D19] rounded-xl object-cover shrink-0"
-              />
-              <button
-                type="button"
-                onClick={startCamera}
-                className="bg-[#F2F4EC] hover:bg-[#E8EFE4] text-[#191D19] font-bold text-xs px-3.5 py-2 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
-              >
-                Retake Photo
-              </button>
+            <div className="space-y-2 pt-1">
+              {faceStatus && (
+                <p className="text-[11px] font-bold text-[#283B24]">{faceStatus}</p>
+              )}
+              <div className="flex items-center justify-between gap-3">
+                <img
+                  src={capturedImage}
+                  alt="Selfie preview"
+                  className="w-24 h-20 border-2 border-[#191D19] rounded-xl object-cover shrink-0"
+                />
+                <button
+                  type="button"
+                  disabled={scanningFace}
+                  onClick={startCamera}
+                  className="bg-[#F2F4EC] hover:bg-[#E8EFE4] disabled:opacity-50 text-[#191D19] font-bold text-xs px-3.5 py-2 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
+                >
+                  Retake Photo
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -358,7 +430,7 @@ export default function Attendance({ onSuccess }) {
       {/* Final Submit */}
       <button
         type="submit"
-        disabled={submitting || !isInside || !capturedImage}
+        disabled={submitting || scanningFace || !isInside || !capturedImage || !faceDescriptor}
         className="w-full bg-[#6B8A63] hover:bg-[#5B7854] disabled:opacity-45 text-white font-extrabold text-sm py-3.5 rounded-xl border-2 border-[#191D19] shadow-[4px_4px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
       >
         {submitting ? 'Uploading to ImgBB & Saving to DB...' : 'Submit Verified Attendance'}

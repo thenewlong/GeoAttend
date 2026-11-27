@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import * as faceapi from '@vladmandic/face-api';
 import { apiRequest } from '../api/client';
 
 const WEEK_DAYS = [
@@ -10,6 +11,37 @@ const WEEK_DAYS = [
   { id: 5, label: 'Friday' },
   { id: 6, label: 'Saturday' },
 ];
+
+let faceModelsLoaded = false;
+
+async function ensureFaceModelsLoaded() {
+  if (faceModelsLoaded) return;
+  await Promise.all([
+    faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
+    faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
+    faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
+  ]);
+  faceModelsLoaded = true;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Image file read nahi ho saki.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Image load nahi ho saki.'));
+    img.src = src;
+  });
+}
 
 function formatMonthLabel(ymKey) {
   if (!ymKey || ymKey === 'all') return 'All Months';
@@ -68,7 +100,7 @@ export default function AdminDashboard() {
   const [selectedMonth, setSelectedMonth] = useState(defaultMonth);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
 
-  // New employee form state
+  // New employee form state (with reference face descriptor)
   const [form, setForm] = useState({
     id: '',
     name: '',
@@ -76,7 +108,11 @@ export default function AdminDashboard() {
     password: '',
     dept: 'Training',
     designation: 'Staff',
+    referenceFaceDescriptor: null,
   });
+  const [facePreview, setFacePreview] = useState('');
+  const [faceStatus, setFaceStatus] = useState('');
+  const [extractingFace, setExtractingFace] = useState(false);
 
   // New holiday form state
   const [holidayForm, setHolidayForm] = useState({
@@ -205,17 +241,88 @@ export default function AdminDashboard() {
     });
   }, [allRecords, selectedMonth, selectedEmployeeId]);
 
+  const handleReferenceFaceChange = async (e) => {
+    const file = e.target.files?.[0];
+    setErr('');
+    setFaceStatus('');
+    setForm((prev) => ({ ...prev, referenceFaceDescriptor: null }));
+
+    if (!file) {
+      setFacePreview('');
+      return;
+    }
+
+    try {
+      setExtractingFace(true);
+      setFaceStatus('Scanning face & generating reference descriptor...');
+      const dataUrl = await readFileAsDataUrl(file);
+      setFacePreview(dataUrl);
+
+      await ensureFaceModelsLoaded();
+      const imgEl = await loadImageElement(dataUrl);
+      const detections = await faceapi
+        .detectAllFaces(imgEl)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (detections.length === 0) {
+        setFacePreview('');
+        setFaceStatus('');
+        setErr('Photo mein face detect nahi hua. Clear front-facing photo upload karein.');
+        return;
+      }
+
+      if (detections.length > 1) {
+        setFacePreview('');
+        setFaceStatus('');
+        setErr('Photo mein 1 se zyada faces hain. Sirf employee ka single face photo upload karein.');
+        return;
+      }
+
+      const descriptor = Array.from(detections[0].descriptor);
+      setForm((prev) => ({ ...prev, referenceFaceDescriptor: descriptor }));
+      setFaceStatus('Face enrolled & ready (128-d descriptor captured).');
+    } catch (error) {
+      setFacePreview('');
+      setFaceStatus('');
+      setErr(error.message || 'Face scan failed. Check /models folder.');
+    } finally {
+      setExtractingFace(false);
+    }
+  };
+
   const handleAddEmployee = async (e) => {
     e.preventDefault();
     setMsg('');
     setErr('');
+
+    if (extractingFace) {
+      setErr('Face scanning chal rahi hai, thoda wait karein.');
+      return;
+    }
+
+    if (!form.referenceFaceDescriptor || form.referenceFaceDescriptor.length !== 128) {
+      setErr('Employee add karne se pehle clear face photo upload karke face enroll karein.');
+      return;
+    }
+
     try {
       await apiRequest('/admin/employees', {
         method: 'POST',
         body: { ...form, role: 'employee' },
       });
-      setForm({ id: '', name: '', email: '', password: '', dept: 'Training', designation: 'Staff' });
-      setMsg('Employee added successfully.');
+      setForm({
+        id: '',
+        name: '',
+        email: '',
+        password: '',
+        dept: 'Training',
+        designation: 'Staff',
+        referenceFaceDescriptor: null,
+      });
+      setFacePreview('');
+      setFaceStatus('');
+      setMsg('Employee added with enrolled face descriptor.');
       await loadData();
     } catch (e) {
       setErr(e.message);
@@ -302,26 +409,18 @@ export default function AdminDashboard() {
   };
 
   if (loading && !overview) {
-    return (
-      <div className="max-w-6xl mx-auto p-6 sm:p-8 text-xs sm:text-sm font-bold text-[#4A5049]">
-        Loading admin console...
-      </div>
-    );
+    return <div className="max-w-5xl mx-auto p-8 text-sm text-gray-500">Loading admin console...</div>;
   }
 
   return (
-    <div className="max-w-6xl mx-auto p-3 sm:p-6 space-y-5 sm:space-y-6 text-[#191D19]">
-      {/* Header + Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b-2 border-[#191D19] pb-4">
+    <div className="max-w-6xl mx-auto p-6 space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-200 pb-4">
         <div>
-          <span className="inline-block bg-[#E8EFE4] border border-[#191D19] rounded-md px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-[#3B5235]">
+          <span className="text-xs font-semibold uppercase tracking-wider text-emerald-600">
             Admin Control Centre
           </span>
-          <h2 className="text-xl sm:text-2xl font-black tracking-tight mt-1">
-            GeoAttend Administration
-          </h2>
+          <h2 className="text-2xl font-bold text-gray-900">GeoAttend Administration</h2>
         </div>
-
         <div className="flex flex-wrap gap-2">
           {['overview', 'attendance', 'employees', 'policy', 'holidays'].map((t) => (
             <button
@@ -332,10 +431,8 @@ export default function AdminDashboard() {
                 setMsg('');
                 setErr('');
               }}
-              className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-extrabold uppercase border-2 border-[#191D19] transition-all cursor-pointer ${
-                tab === t
-                  ? 'bg-[#6B8A63] text-white shadow-[3px_3px_0_#191D19]'
-                  : 'bg-white text-[#191D19] hover:bg-[#F2F4EC] shadow-[2px_2px_0_#191D19]'
+              className={`px-4 py-2 rounded-xl text-xs font-semibold uppercase cursor-pointer ${
+                tab === t ? 'bg-gray-900 text-white' : 'bg-white border border-gray-300 text-gray-700'
               }`}
             >
               {t}
@@ -345,12 +442,12 @@ export default function AdminDashboard() {
       </div>
 
       {msg && (
-        <div className="p-3.5 rounded-xl bg-[#E8EFE4] border-2 border-[#191D19] text-[#283B24] text-xs font-bold shadow-[3px_3px_0_#191D19]">
+        <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-medium">
           {msg}
         </div>
       )}
       {err && (
-        <div className="p-3.5 rounded-xl bg-[#FFE5E5] border-2 border-[#191D19] text-[#8A1C1C] text-xs font-bold shadow-[3px_3px_0_#191D19]">
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
           {err}
         </div>
       )}
@@ -359,69 +456,54 @@ export default function AdminDashboard() {
       {tab === 'overview' && overview && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white border-2 border-[#191D19] p-4 sm:p-5 rounded-2xl shadow-[4px_4px_0_#191D19]">
-              <div className="text-2xl sm:text-3xl font-black text-[#191D19]">
-                {overview.stats.totalEmployees}
-              </div>
-              <div className="text-xs font-bold text-[#4A5049] mt-1">Total Employees</div>
+            <div className="bg-white border border-gray-200 p-5 rounded-2xl">
+              <div className="text-2xl font-bold text-gray-900">{overview.stats.totalEmployees}</div>
+              <div className="text-xs text-gray-500 mt-1">Total Employees</div>
             </div>
-            <div className="bg-[#E8EFE4] border-2 border-[#191D19] p-4 sm:p-5 rounded-2xl shadow-[4px_4px_0_#191D19]">
-              <div className="text-2xl sm:text-3xl font-black text-[#3B5235]">
-                {overview.stats.presentToday}
-              </div>
-              <div className="text-xs font-bold text-[#3B5235] mt-1">Present Today</div>
+            <div className="bg-white border border-gray-200 p-5 rounded-2xl">
+              <div className="text-2xl font-bold text-emerald-600">{overview.stats.presentToday}</div>
+              <div className="text-xs text-gray-500 mt-1">Present Today</div>
             </div>
-            <div className="bg-[#FFE5E5] border-2 border-[#191D19] p-4 sm:p-5 rounded-2xl shadow-[4px_4px_0_#191D19]">
-              <div className="text-2xl sm:text-3xl font-black text-[#8A1C1C]">
-                {overview.stats.absentToday}
-              </div>
-              <div className="text-xs font-bold text-[#8A1C1C] mt-1">Absent Today</div>
+            <div className="bg-white border border-gray-200 p-5 rounded-2xl">
+              <div className="text-2xl font-bold text-rose-600">{overview.stats.absentToday}</div>
+              <div className="text-xs text-gray-500 mt-1">Absent Today</div>
             </div>
-            <div className="bg-[#FFD84D] border-2 border-[#191D19] p-4 sm:p-5 rounded-2xl shadow-[4px_4px_0_#191D19]">
-              <div className="text-2xl sm:text-3xl font-black text-[#191D19]">
-                {overview.stats.rateToday}%
-              </div>
-              <div className="text-xs font-bold text-[#191D19] mt-1">Attendance Rate</div>
+            <div className="bg-white border border-gray-200 p-5 rounded-2xl">
+              <div className="text-2xl font-bold text-gray-900">{overview.stats.rateToday}%</div>
+              <div className="text-xs text-gray-500 mt-1">Attendance Rate</div>
             </div>
           </div>
 
-          <div className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] space-y-4">
-            <h3 className="font-black text-[#191D19] text-sm sm:text-base">
-              Recent Attendance Logs (with ImgBB Selfies)
-            </h3>
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4">
+            <h3 className="font-bold text-gray-900 text-base">Recent Attendance Logs (with ImgBB Selfies)</h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs sm:text-sm border-collapse">
+              <table className="w-full text-left text-sm border-collapse">
                 <thead>
-                  <tr className="border-b-2 border-[#191D19] text-[11px] font-extrabold uppercase text-[#4A5049]">
-                    <th className="py-2.5 pr-4">Employee</th>
-                    <th className="py-2.5 pr-4">Date</th>
-                    <th className="py-2.5 pr-4">Time</th>
-                    <th className="py-2.5 pr-4">Distance</th>
-                    <th className="py-2.5 pr-4">Selfie</th>
-                    <th className="py-2.5">Status</th>
+                  <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                    <th className="py-2 pr-4">Employee</th>
+                    <th className="py-2 pr-4">Date</th>
+                    <th className="py-2 pr-4">Time</th>
+                    <th className="py-2 pr-4">Distance</th>
+                    <th className="py-2 pr-4">Selfie</th>
+                    <th className="py-2">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(overview.recentRecords || []).map((r) => (
-                    <tr key={r.id} className="border-b border-[#E5E7DF]">
-                      <td className="py-3 pr-4 font-bold text-[#191D19]">
-                        {r.name}{' '}
-                        <span className="text-xs font-semibold text-[#6B7268]">({r.employee_id})</span>
+                    <tr key={r.id} className="border-b border-gray-100">
+                      <td className="py-3 pr-4 font-medium text-gray-900">
+                        {r.name} <span className="text-xs text-gray-400">({r.employee_id})</span>
                       </td>
-                      <td className="py-3 pr-4 font-medium text-[#4A5049]">
-                        {String(r.attendance_date).slice(0, 10)}
-                      </td>
-                      <td className="py-3 pr-4 font-medium text-[#4A5049]">
-                        {String(r.check_in_time).slice(0, 5)}
-                      </td>
-                      <td className="py-3 pr-4 font-medium text-[#4A5049]">{r.distance_meters}m</td>
+                      <td className="py-3 pr-4 text-gray-600">{String(r.attendance_date).slice(0, 10)}</td>
+                      <td className="py-3 pr-4 text-gray-600">{String(r.check_in_time).slice(0, 5)}</td>
+                      <td className="py-3 pr-4 text-gray-600">{r.distance_meters}m</td>
                       <td className="py-3 pr-4">
                         {r.selfie_url ? (
                           <a href={r.selfie_url} target="_blank" rel="noreferrer">
                             <img
                               src={r.selfie_url}
                               alt={r.name}
-                              className="w-12 h-10 object-cover rounded-lg border-2 border-[#191D19]"
+                              className="w-12 h-10 object-cover rounded-lg border border-gray-200"
                             />
                           </a>
                         ) : (
@@ -429,7 +511,7 @@ export default function AdminDashboard() {
                         )}
                       </td>
                       <td className="py-3">
-                        <span className="px-2.5 py-1 rounded-full text-xs font-extrabold bg-[#E8EFE4] text-[#283B24] border border-[#191D19]">
+                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700">
                           {r.status}
                         </span>
                       </td>
@@ -437,7 +519,7 @@ export default function AdminDashboard() {
                   ))}
                   {(!overview.recentRecords || overview.recentRecords.length === 0) && (
                     <tr>
-                      <td colSpan="6" className="py-6 text-center text-[#6B7268] text-xs font-bold">
+                      <td colSpan="6" className="py-6 text-center text-gray-400 text-xs">
                         Abhi koi attendance record nahi hai.
                       </td>
                     </tr>
@@ -453,14 +535,14 @@ export default function AdminDashboard() {
       {tab === 'attendance' && (
         <div className="space-y-6">
           {/* Filters */}
-          <div className="bg-white border-2 border-[#191D19] rounded-2xl p-4 sm:p-5 shadow-[4px_4px_0_#191D19] flex flex-wrap items-end justify-between gap-4">
+          <div className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-wrap items-end justify-between gap-4">
             <div className="flex flex-wrap gap-4">
               <div>
-                <label className="block text-xs font-extrabold text-[#191D19] mb-1">Month</label>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Month</label>
                 <select
                   value={selectedMonth}
                   onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="border-2 border-[#191D19] rounded-xl px-3 py-2 text-xs sm:text-sm font-bold bg-[#F8F8F3]"
+                  className="border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white"
                 >
                   <option value="all">All Months</option>
                   {availableMonths.map((ym) => (
@@ -472,11 +554,11 @@ export default function AdminDashboard() {
               </div>
 
               <div>
-                <label className="block text-xs font-extrabold text-[#191D19] mb-1">Employee</label>
+                <label className="block text-xs font-semibold text-gray-600 mb-1">Employee</label>
                 <select
                   value={selectedEmployeeId}
                   onChange={(e) => setSelectedEmployeeId(e.target.value)}
-                  className="border-2 border-[#191D19] rounded-xl px-3 py-2 text-xs sm:text-sm font-bold bg-[#F8F8F3]"
+                  className="border border-gray-300 rounded-xl px-3 py-2 text-sm bg-white"
                 >
                   <option value="all">All Employees ({employeeListOnly.length})</option>
                   {employeeListOnly.map((emp) => (
@@ -488,48 +570,44 @@ export default function AdminDashboard() {
               </div>
             </div>
 
-            <div className="text-xs font-bold text-[#4A5049]">
-              Month: <b className="text-[#191D19]">{formatMonthLabel(selectedMonth)}</b>
+            <div className="text-xs text-gray-500">
+              Month: <b>{formatMonthLabel(selectedMonth)}</b>
             </div>
           </div>
 
           {/* Per-Employee Present / Absent Summary Table */}
-          <div className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] space-y-4">
-            <h3 className="font-black text-[#191D19] text-sm sm:text-base">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4">
+            <h3 className="font-bold text-gray-900 text-base">
               Employee-wise Present & Absent Summary ({formatMonthLabel(selectedMonth)})
             </h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs sm:text-sm border-collapse">
+              <table className="w-full text-left text-sm border-collapse">
                 <thead>
-                  <tr className="border-b-2 border-[#191D19] text-[11px] font-extrabold uppercase text-[#4A5049]">
-                    <th className="py-2.5 pr-4">Employee</th>
-                    <th className="py-2.5 pr-4">Dept</th>
-                    <th className="py-2.5 pr-4">Present Days</th>
-                    <th className="py-2.5 pr-4">Absent Days</th>
-                    <th className="py-2.5">Action</th>
+                  <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                    <th className="py-2 pr-4">Employee</th>
+                    <th className="py-2 pr-4">Dept</th>
+                    <th className="py-2 pr-4">Present Days</th>
+                    <th className="py-2 pr-4">Absent Days</th>
+                    <th className="py-2">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {perEmployeeSummary.map((item) => {
                     const isSelected = String(selectedEmployeeId) === String(item.employee.id);
                     return (
-                      <tr key={item.employee.id} className="border-b border-[#E5E7DF]">
-                        <td className="py-3 pr-4 font-bold text-[#191D19]">
+                      <tr key={item.employee.id} className="border-b border-gray-100">
+                        <td className="py-3 pr-4 font-medium text-gray-900">
                           {item.employee.name}{' '}
-                          <span className="text-xs font-semibold text-[#6B7268]">
-                            ({item.employee.id})
-                          </span>
+                          <span className="text-xs text-gray-400">({item.employee.id})</span>
                         </td>
-                        <td className="py-3 pr-4 font-medium text-[#4A5049]">
-                          {item.employee.dept || 'General'}
-                        </td>
+                        <td className="py-3 pr-4 text-gray-600">{item.employee.dept || 'General'}</td>
                         <td className="py-3 pr-4">
-                          <span className="px-2.5 py-1 rounded-full text-xs font-extrabold bg-[#E8EFE4] text-[#283B24] border border-[#191D19]">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700">
                             {item.presentDays} Present
                           </span>
                         </td>
                         <td className="py-3 pr-4">
-                          <span className="px-2.5 py-1 rounded-full text-xs font-extrabold bg-[#FFE5E5] text-[#8A1C1C] border border-[#191D19]">
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700">
                             {selectedMonth === 'all' ? '—' : `${item.absentDays} Absent`}
                           </span>
                         </td>
@@ -539,7 +617,7 @@ export default function AdminDashboard() {
                             onClick={() =>
                               setSelectedEmployeeId(isSelected ? 'all' : item.employee.id)
                             }
-                            className="px-3 py-1 rounded-xl bg-[#F2F4EC] hover:bg-[#E8EFE4] border-2 border-[#191D19] text-xs font-extrabold shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
+                            className="px-3 py-1 rounded-lg border border-gray-300 text-xs font-medium cursor-pointer"
                           >
                             {isSelected ? 'Show All' : 'View Dates'}
                           </button>
@@ -549,7 +627,7 @@ export default function AdminDashboard() {
                   })}
                   {perEmployeeSummary.length === 0 && (
                     <tr>
-                      <td colSpan="5" className="py-6 text-center text-[#6B7268] text-xs font-bold">
+                      <td colSpan="5" className="py-6 text-center text-gray-400 text-xs">
                         Koi employee record nahi mila.
                       </td>
                     </tr>
@@ -560,41 +638,36 @@ export default function AdminDashboard() {
           </div>
 
           {/* Date-wise Attendance Log for Selected Employee / All */}
-          <div className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] space-y-4">
-            <h3 className="font-black text-[#191D19] text-sm sm:text-base">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 space-y-4">
+            <h3 className="font-bold text-gray-900 text-base">
               Date-wise Attendance Entries ({filteredEmployeeLogs.length})
             </h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs sm:text-sm border-collapse">
+              <table className="w-full text-left text-sm border-collapse">
                 <thead>
-                  <tr className="border-b-2 border-[#191D19] text-[11px] font-extrabold uppercase text-[#4A5049]">
-                    <th className="py-2.5 pr-4">Employee</th>
-                    <th className="py-2.5 pr-4">Date</th>
-                    <th className="py-2.5 pr-4">Time</th>
-                    <th className="py-2.5 pr-4">Distance</th>
-                    <th className="py-2.5 pr-4">Selfie</th>
-                    <th className="py-2.5">Status</th>
+                  <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                    <th className="py-2 pr-4">Employee</th>
+                    <th className="py-2 pr-4">Date</th>
+                    <th className="py-2 pr-4">Time</th>
+                    <th className="py-2 pr-4">Distance</th>
+                    <th className="py-2 pr-4">Selfie</th>
+                    <th className="py-2">Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredEmployeeLogs.map((r) => (
-                    <tr
-                      key={r.id ?? `${r.employee_id}-${r.attendance_date}-${r.check_in_time}`}
-                      className="border-b border-[#E5E7DF]"
-                    >
-                      <td className="py-3 pr-4 font-bold text-[#191D19]">
+                    <tr key={r.id ?? `${r.employee_id}-${r.attendance_date}-${r.check_in_time}`} className="border-b border-gray-100">
+                      <td className="py-3 pr-4 font-medium text-gray-900">
                         {r.name || r.employee_id}{' '}
-                        <span className="text-xs font-semibold text-[#6B7268]">
-                          ({r.employee_id})
-                        </span>
+                        <span className="text-xs text-gray-400">({r.employee_id})</span>
                       </td>
-                      <td className="py-3 pr-4 font-medium text-[#4A5049]">
+                      <td className="py-3 pr-4 text-gray-600">
                         {String(r.attendance_date || '').slice(0, 10)}
                       </td>
-                      <td className="py-3 pr-4 font-medium text-[#4A5049]">
+                      <td className="py-3 pr-4 text-gray-600">
                         {String(r.check_in_time || '').slice(0, 5)}
                       </td>
-                      <td className="py-3 pr-4 font-medium text-[#4A5049]">
+                      <td className="py-3 pr-4 text-gray-600">
                         {r.distance_meters != null ? `${r.distance_meters}m` : '—'}
                       </td>
                       <td className="py-3 pr-4">
@@ -603,7 +676,7 @@ export default function AdminDashboard() {
                             <img
                               src={r.selfie_url}
                               alt={r.name || r.employee_id}
-                              className="w-12 h-10 object-cover rounded-lg border-2 border-[#191D19]"
+                              className="w-12 h-10 object-cover rounded-lg border border-gray-200"
                             />
                           </a>
                         ) : (
@@ -611,7 +684,7 @@ export default function AdminDashboard() {
                         )}
                       </td>
                       <td className="py-3">
-                        <span className="px-2.5 py-1 rounded-full text-xs font-extrabold bg-[#E8EFE4] text-[#283B24] border border-[#191D19]">
+                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700">
                           {r.status || 'Present'}
                         </span>
                       </td>
@@ -619,7 +692,7 @@ export default function AdminDashboard() {
                   ))}
                   {filteredEmployeeLogs.length === 0 && (
                     <tr>
-                      <td colSpan="6" className="py-6 text-center text-[#6B7268] text-xs font-bold">
+                      <td colSpan="6" className="py-6 text-center text-gray-400 text-xs">
                         Is filter ke liye koi attendance date record nahi hai.
                       </td>
                     </tr>
@@ -636,106 +709,147 @@ export default function AdminDashboard() {
         <div className="space-y-6">
           <form
             onSubmit={handleAddEmployee}
-            className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] grid grid-cols-1 md:grid-cols-3 gap-4"
+            className="bg-white border border-gray-200 rounded-2xl p-6 grid grid-cols-1 md:grid-cols-3 gap-4"
           >
             <input
               placeholder="Employee ID (e.g. E002)"
               value={form.id}
               onChange={(e) => setForm({ ...form, id: e.target.value })}
-              className="border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+              className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
             <input
               placeholder="Full Name"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+              className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
             <input
               type="email"
               placeholder="Email"
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+              className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
             <input
               type="password"
               placeholder="Initial Password"
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
-              className="border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+              className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
             <input
               placeholder="Department"
               value={form.dept}
               onChange={(e) => setForm({ ...form, dept: e.target.value })}
-              className="border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+              className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
             <input
               placeholder="Designation"
               value={form.designation}
               onChange={(e) => setForm({ ...form, designation: e.target.value })}
-              className="border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+              className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
+
+            {/* Reference Face Enrollment Input */}
+            <div className="md:col-span-3 border border-gray-200 rounded-xl p-4 bg-gray-50/50 flex flex-wrap items-center justify-between gap-4">
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-gray-700">
+                  Reference Face Photo (1:1 Attendance Verification Ke Liye)
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleReferenceFaceChange}
+                  className="text-xs text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-xs file:font-semibold file:bg-white file:text-gray-800 hover:file:bg-gray-100 cursor-pointer"
+                />
+                {faceStatus && (
+                  <p className="text-xs font-medium text-emerald-700">{faceStatus}</p>
+                )}
+              </div>
+
+              {facePreview && (
+                <img
+                  src={facePreview}
+                  alt="Reference face preview"
+                  className="w-16 h-16 object-cover rounded-xl border border-gray-300"
+                />
+              )}
+            </div>
+
             <div className="md:col-span-3">
               <button
                 type="submit"
-                className="bg-[#6B8A63] hover:bg-[#5B7854] text-white px-5 py-2.5 rounded-xl text-xs font-extrabold border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+                disabled={extractingFace}
+                className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white px-5 py-2.5 rounded-xl text-xs font-semibold cursor-pointer"
               >
-                + Add Employee
+                {extractingFace ? 'Scanning Face...' : '+ Add Employee'}
               </button>
             </div>
           </form>
 
-          <div className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] overflow-x-auto">
-            <table className="w-full text-left text-xs sm:text-sm border-collapse">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 overflow-x-auto">
+            <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="border-b-2 border-[#191D19] text-[11px] font-extrabold uppercase text-[#4A5049]">
-                  <th className="py-2.5 pr-4">ID</th>
-                  <th className="py-2.5 pr-4">Name</th>
-                  <th className="py-2.5 pr-4">Email</th>
-                  <th className="py-2.5 pr-4">Dept</th>
-                  <th className="py-2.5 pr-4">Status</th>
-                  <th className="py-2.5">Actions</th>
+                <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                  <th className="py-2 pr-4">ID</th>
+                  <th className="py-2 pr-4">Name</th>
+                  <th className="py-2 pr-4">Email</th>
+                  <th className="py-2 pr-4">Dept</th>
+                  <th className="py-2 pr-4">Face ID</th>
+                  <th className="py-2 pr-4">Status</th>
+                  <th className="py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {employees.map((u) => (
-                  <tr key={u.id} className="border-b border-[#E5E7DF]">
-                    <td className="py-3 pr-4 font-mono text-xs font-bold">{u.id}</td>
-                    <td className="py-3 pr-4 font-bold text-[#191D19]">{u.name}</td>
-                    <td className="py-3 pr-4 font-medium text-[#4A5049]">{u.email}</td>
-                    <td className="py-3 pr-4 font-medium text-[#4A5049]">{u.dept}</td>
-                    <td className="py-3 pr-4">
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-xs font-extrabold border border-[#191D19] ${
-                          u.is_active
-                            ? 'bg-[#E8EFE4] text-[#283B24]'
-                            : 'bg-[#F2F4EC] text-[#6B7268]'
-                        }`}
-                      >
-                        {u.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                    </td>
-                    <td className="py-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleToggleEmployee(u.id)}
-                        className="px-3 py-1 rounded-xl bg-[#F2F4EC] hover:bg-[#E8EFE4] border-2 border-[#191D19] text-xs font-bold shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
-                      >
-                        Toggle
-                      </button>
-                      {u.role !== 'admin' && (
+                {employees.map((u) => {
+                  const hasFace = Boolean(u.reference_face_descriptor || u.face_enrolled);
+                  return (
+                    <tr key={u.id} className="border-b border-gray-100">
+                      <td className="py-3 pr-4 font-mono text-xs">{u.id}</td>
+                      <td className="py-3 pr-4 font-medium text-gray-900">{u.name}</td>
+                      <td className="py-3 pr-4 text-gray-600">{u.email}</td>
+                      <td className="py-3 pr-4 text-gray-600">{u.dept}</td>
+                      <td className="py-3 pr-4">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                            hasFace
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {hasFace ? 'Enrolled' : 'Missing'}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-4">
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            u.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'
+                          }`}
+                        >
+                          {u.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="py-3 flex gap-2">
                         <button
                           type="button"
-                          onClick={() => handleDeleteEmployee(u.id)}
-                          className="px-3 py-1 rounded-xl bg-[#FFE5E5] text-[#8A1C1C] border-2 border-[#191D19] text-xs font-bold shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
+                          onClick={() => handleToggleEmployee(u.id)}
+                          className="px-3 py-1 rounded-lg border border-gray-300 text-xs font-medium cursor-pointer"
                         >
-                          Delete
+                          Toggle
                         </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        {u.role !== 'admin' && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteEmployee(u.id)}
+                            className="px-3 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-xs font-medium cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -746,82 +860,70 @@ export default function AdminDashboard() {
       {tab === 'policy' && policy && (
         <form
           onSubmit={handleSavePolicy}
-          className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] space-y-6"
+          className="bg-white border border-gray-200 rounded-2xl p-6 space-y-6"
         >
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Campus Latitude
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Campus Latitude</label>
               <input
                 type="number"
                 step="any"
                 value={policy.campus_lat}
                 onChange={(e) => setPolicy({ ...policy, campus_lat: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Campus Longitude
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Campus Longitude</label>
               <input
                 type="number"
                 step="any"
                 value={policy.campus_lng}
                 onChange={(e) => setPolicy({ ...policy, campus_lng: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Radius (meters)
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Radius (meters)</label>
               <input
                 type="number"
                 value={policy.radius_meters}
                 onChange={(e) => setPolicy({ ...policy, radius_meters: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Window Start
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Window Start</label>
               <input
                 type="time"
                 value={String(policy.window_start || '09:00').slice(0, 5)}
                 onChange={(e) => setPolicy({ ...policy, window_start: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Window End
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Window End</label>
               <input
                 type="time"
                 value={String(policy.window_end || '4:30').slice(0, 5)}
                 onChange={(e) => setPolicy({ ...policy, window_end: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Max GPS Accuracy (m)
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Max GPS Accuracy (m)</label>
               <input
                 type="number"
                 value={policy.max_accuracy_meters}
                 onChange={(e) => setPolicy({ ...policy, max_accuracy_meters: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
           </div>
 
           {/* Interactive Weekly Off Selector */}
-          <div className="border-t-2 border-[#E5E7DF] pt-5 space-y-2.5">
-            <label className="block text-xs font-extrabold text-[#191D19] uppercase tracking-wider">
+          <div className="border-t border-gray-100 pt-5 space-y-2">
+            <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider">
               Weekly Off Days (Selected days par attendance band rahegi)
             </label>
             <div className="flex flex-wrap gap-2">
@@ -832,10 +934,10 @@ export default function AdminDashboard() {
                     key={day.id}
                     type="button"
                     onClick={() => toggleWeeklyOffDay(day.id)}
-                    className={`px-4 py-2 rounded-xl text-xs font-extrabold border-2 border-[#191D19] transition-all cursor-pointer ${
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                       isOff
-                        ? 'bg-[#FFD84D] text-[#191D19] shadow-[2px_2px_0_#191D19]'
-                        : 'bg-[#F8F8F3] text-[#4A5049] hover:bg-[#E8EFE4]'
+                        ? 'bg-amber-100 border-amber-400 text-amber-900'
+                        : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
                     }`}
                   >
                     {isOff ? `✓ ${day.label} (Off)` : day.label}
@@ -843,22 +945,12 @@ export default function AdminDashboard() {
                 );
               })}
             </div>
-            <p className="text-xs font-medium text-[#4A5049]">
-              Abhi select kiye gaye weekly off days:{' '}
-              <b className="text-[#191D19]">
-                {(policy.weekly_off || []).length === 0
-                  ? 'None (7 days open)'
-                  : WEEK_DAYS.filter((d) => policy.weekly_off.includes(d.id))
-                      .map((d) => d.label)
-                      .join(', ')}
-              </b>
-            </p>
           </div>
 
           <div>
             <button
               type="submit"
-              className="bg-[#6B8A63] hover:bg-[#5B7854] text-white px-6 py-2.5 rounded-xl text-xs font-extrabold border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+              className="bg-gray-900 hover:bg-gray-800 text-white px-6 py-2.5 rounded-xl text-xs font-semibold cursor-pointer"
             >
               Save Policy & Weekly Off
             </button>
@@ -871,30 +963,28 @@ export default function AdminDashboard() {
         <div className="space-y-6">
           <form
             onSubmit={handleAddHoliday}
-            className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] grid grid-cols-1 md:grid-cols-4 gap-4 items-end"
+            className="bg-white border border-gray-200 rounded-2xl p-6 grid grid-cols-1 md:grid-cols-4 gap-4 items-end"
           >
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">Date</label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Date</label>
               <input
                 type="date"
                 value={holidayForm.holiday_date}
                 onChange={(e) => setHolidayForm({ ...holidayForm, holiday_date: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">
-                Holiday Name
-              </label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Holiday Name</label>
               <input
                 placeholder="e.g. Republic Day"
                 value={holidayForm.name}
                 onChange={(e) => setHolidayForm({ ...holidayForm, name: e.target.value })}
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-medium bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-extrabold text-[#191D19] mb-1">Type</label>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Type</label>
               <select
                 value={holidayForm.is_working_override ? 'true' : 'false'}
                 onChange={(e) =>
@@ -903,7 +993,7 @@ export default function AdminDashboard() {
                     is_working_override: e.target.value === 'true',
                   })
                 }
-                className="w-full border-2 border-[#191D19] rounded-xl p-2.5 text-xs sm:text-sm font-bold bg-[#F8F8F3]"
+                className="w-full border border-gray-300 rounded-xl p-2.5 text-sm bg-white"
               >
                 <option value="false">Holiday (Attendance Closed)</option>
                 <option value="true">Special Working Day (Override Weekly Off)</option>
@@ -912,36 +1002,34 @@ export default function AdminDashboard() {
             <div>
               <button
                 type="submit"
-                className="w-full bg-[#6B8A63] hover:bg-[#5B7854] text-white px-5 py-2.5 rounded-xl text-xs font-extrabold border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+                className="w-full bg-gray-900 hover:bg-gray-800 text-white px-5 py-2.5 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 + Save Date
               </button>
             </div>
           </form>
 
-          <div className="bg-white border-2 border-[#191D19] rounded-2xl p-5 sm:p-6 shadow-[4px_4px_0_#191D19] overflow-x-auto">
-            <table className="w-full text-left text-xs sm:text-sm border-collapse">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6 overflow-x-auto">
+            <table className="w-full text-left text-sm border-collapse">
               <thead>
-                <tr className="border-b-2 border-[#191D19] text-[11px] font-extrabold uppercase text-[#4A5049]">
-                  <th className="py-2.5 pr-4">Date</th>
-                  <th className="py-2.5 pr-4">Name</th>
-                  <th className="py-2.5 pr-4">Rule</th>
-                  <th className="py-2.5">Action</th>
+                <tr className="border-b border-gray-200 text-xs uppercase text-gray-500">
+                  <th className="py-2 pr-4">Date</th>
+                  <th className="py-2 pr-4">Name</th>
+                  <th className="py-2 pr-4">Rule</th>
+                  <th className="py-2">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {holidays.map((h) => (
-                  <tr key={h.id} className="border-b border-[#E5E7DF]">
-                    <td className="py-3 pr-4 font-mono text-xs font-bold">
-                      {String(h.holiday_date).slice(0, 10)}
-                    </td>
-                    <td className="py-3 pr-4 font-bold text-[#191D19]">{h.name}</td>
+                  <tr key={h.id} className="border-b border-gray-100">
+                    <td className="py-3 pr-4 font-mono text-xs">{String(h.holiday_date).slice(0, 10)}</td>
+                    <td className="py-3 pr-4 font-medium text-gray-900">{h.name}</td>
                     <td className="py-3 pr-4">
                       <span
-                        className={`px-2.5 py-1 rounded-full text-xs font-extrabold border border-[#191D19] ${
+                        className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
                           h.is_working_override
-                            ? 'bg-[#E8EFE4] text-[#283B24]'
-                            : 'bg-[#FFD84D] text-[#191D19]'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : 'bg-amber-50 text-amber-800'
                         }`}
                       >
                         {h.is_working_override ? 'Working Day Override' : 'Holiday'}
@@ -951,7 +1039,7 @@ export default function AdminDashboard() {
                       <button
                         type="button"
                         onClick={() => handleDeleteHoliday(h.id)}
-                        className="px-3 py-1 rounded-xl bg-[#FFE5E5] text-[#8A1C1C] border-2 border-[#191D19] text-xs font-bold shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
+                        className="px-3 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-xs font-medium cursor-pointer"
                       >
                         Delete
                       </button>
@@ -960,7 +1048,7 @@ export default function AdminDashboard() {
                 ))}
                 {holidays.length === 0 && (
                   <tr>
-                    <td colSpan="4" className="py-6 text-center text-[#6B7268] text-xs font-bold">
+                    <td colSpan="4" className="py-6 text-center text-gray-400 text-xs">
                       Koi holiday configured nahi hai.
                     </td>
                   </tr>
