@@ -1,18 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import * as faceapi from '@vladmandic/face-api';
 import { apiRequest } from '../api/client';
-
-let faceModelsLoaded = false;
-
-async function ensureFaceModelsLoaded() {
-  if (faceModelsLoaded) return;
-  await Promise.all([
-    faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
-    faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
-    faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
-  ]);
-  faceModelsLoaded = true;
-}
 
 export default function Attendance({ onSuccess }) {
   // NIELIT Agartala coordinates
@@ -24,11 +11,7 @@ export default function Attendance({ onSuccess }) {
   const [coords, setCoords] = useState(null);
   const [distance, setDistance] = useState(null);
   const [isInside, setIsInside] = useState(false);
-  const [checkingLoc, setCheckingLoc] = useState(false);
   const [capturedImage, setCapturedImage] = useState(null);
-  const [faceDescriptor, setFaceDescriptor] = useState(null);
-  const [faceStatus, setFaceStatus] = useState('');
-  const [scanningFace, setScanningFace] = useState(false);
   const [submittedRecord, setSubmittedRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -77,11 +60,9 @@ export default function Attendance({ onSuccess }) {
 
   const verifyLocation = () => {
     setErrorMsg('');
-    setCheckingLoc(true);
     setLocationStatus('Fetching real-time GPS coordinates...');
 
     if (!navigator.geolocation) {
-      setCheckingLoc(false);
       setIsInside(false);
       setLocationStatus('Geolocation is not supported by your browser.');
       return;
@@ -96,12 +77,11 @@ export default function Attendance({ onSuccess }) {
 
         setCoords({ lat: userLat, lng: userLng, accuracy });
         setDistance(dist);
-        setCheckingLoc(false);
 
         if (dist <= ALLOWED_RADIUS) {
           setIsInside(true);
           setLocationStatus(
-            `Verified! Inside NIELIT Agartala zone (${dist}m away, ±${Math.round(accuracy)}m).`
+            `Verified! Inside NIELIT Agartala zone (${dist}m away, accuracy ±${Math.round(accuracy)}m).`
           );
         } else {
           setIsInside(false);
@@ -111,7 +91,6 @@ export default function Attendance({ onSuccess }) {
         }
       },
       (error) => {
-        setCheckingLoc(false);
         setIsInside(false);
         setLocationStatus('Location error: ' + error.message);
       },
@@ -122,8 +101,6 @@ export default function Attendance({ onSuccess }) {
   const startCamera = async () => {
     setErrorMsg('');
     setCapturedImage(null);
-    setFaceDescriptor(null);
-    setFaceStatus('');
     stopCameraTracks();
 
     try {
@@ -139,7 +116,7 @@ export default function Attendance({ onSuccess }) {
     }
   };
 
-  const capturePhoto = async () => {
+  const capturePhoto = () => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video) return;
@@ -152,48 +129,9 @@ export default function Attendance({ onSuccess }) {
     const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, width, height);
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    setCapturedImage(dataUrl);
     stopCameraTracks();
-
-    try {
-      setScanningFace(true);
-      setErrorMsg('');
-      setFaceStatus('Verifying live face geometry...');
-
-      await ensureFaceModelsLoaded();
-      const detections = await faceapi
-        .detectAllFaces(canvas)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      if (detections.length === 0) {
-        setCapturedImage(null);
-        setFaceDescriptor(null);
-        setFaceStatus('');
-        setErrorMsg('Face detect nahi hua. Clear front selfie ke liye Retake karein.');
-        return;
-      }
-
-      if (detections.length > 1) {
-        setCapturedImage(null);
-        setFaceDescriptor(null);
-        setFaceStatus('');
-        setErrorMsg('Frame mein sirf 1 employee ka face hona chahiye.');
-        return;
-      }
-
-      const descriptorArray = Array.from(detections[0].descriptor);
-      setCapturedImage(dataUrl);
-      setFaceDescriptor(descriptorArray);
-      setFaceStatus('Live face captured & ready for backend match');
-    } catch (err) {
-      setCapturedImage(null);
-      setFaceDescriptor(null);
-      setFaceStatus('');
-      setErrorMsg(err.message || 'Face scan failed. Check /models folder.');
-    } finally {
-      setScanningFace(false);
-    }
   };
 
   const handleSubmit = async (e) => {
@@ -205,8 +143,8 @@ export default function Attendance({ onSuccess }) {
       return;
     }
 
-    if (!capturedImage || !Array.isArray(faceDescriptor) || faceDescriptor.length !== 128) {
-      setErrorMsg('Pehle valid live selfie aur face scan complete karein.');
+    if (!capturedImage) {
+      setErrorMsg('Pehle live selfie capture karein.');
       return;
     }
 
@@ -219,7 +157,6 @@ export default function Attendance({ onSuccess }) {
           lng: coords.lng,
           accuracy: coords.accuracy,
           selfieBase64: capturedImage,
-          faceDescriptor,
         },
       });
 
@@ -238,9 +175,6 @@ export default function Attendance({ onSuccess }) {
     stopCameraTracks();
     setSubmittedRecord(null);
     setCapturedImage(null);
-    setFaceDescriptor(null);
-    setFaceStatus('');
-    setScanningFace(false);
     setIsInside(false);
     setCoords(null);
     setDistance(null);
@@ -250,30 +184,28 @@ export default function Attendance({ onSuccess }) {
 
   if (submittedRecord) {
     return (
-      <div className="max-w-md sm:max-w-xl mx-auto bg-white border-2 border-[#191D19] p-6 sm:p-8 rounded-2xl shadow-[5px_5px_0_#191D19] text-center space-y-4 mt-4 text-[#191D19]">
-        <div className="w-12 h-12 bg-[#FFD84D] text-[#191D19] rounded-full flex items-center justify-center mx-auto text-xl font-black border-2 border-[#191D19] shadow-[2px_2px_0_#191D19]">
+      <div className="max-w-xl mx-auto bg-white border border-gray-200 p-8 rounded-2xl shadow-sm text-center space-y-5 mt-8">
+        <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold border border-emerald-200">
           ✓
         </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-black tracking-tight">
-            Attendance Logged Successfully
-          </h2>
-          <p className="text-xs sm:text-sm text-[#4A5049] mt-1 font-medium">
-            Ref: <b>{submittedRecord.ref_code}</b> · Distance: <b>{submittedRecord.distance_meters}m</b> · Status:{' '}
-            <span className="text-[#4E6B47] font-extrabold">{submittedRecord.status}</span>
-          </p>
-        </div>
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900">
+          Attendance Logged Successfully
+        </h2>
+        <p className="text-sm text-gray-600">
+          Ref: <b>{submittedRecord.ref_code}</b> · Distance: <b>{submittedRecord.distance_meters}m</b> · Status:{' '}
+          <span className="text-emerald-700 font-semibold">{submittedRecord.status}</span>
+        </p>
         {submittedRecord.selfie_url && (
           <img
             src={submittedRecord.selfie_url}
             alt="Uploaded selfie"
-            className="w-28 h-22 sm:w-32 sm:h-24 object-cover rounded-xl mx-auto border-2 border-[#191D19]"
+            className="w-32 h-24 object-cover rounded-xl mx-auto border border-gray-200 shadow-sm"
           />
         )}
         <button
           type="button"
           onClick={resetForm}
-          className="w-full sm:w-auto bg-[#6B8A63] hover:bg-[#5B7854] text-white font-bold text-xs sm:text-sm px-6 py-2.5 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+          className="bg-gray-900 hover:bg-gray-800 text-white px-6 py-2.5 rounded-xl text-sm font-medium transition-all cursor-pointer"
         >
           Mark Another Entry
         </button>
@@ -284,157 +216,139 @@ export default function Attendance({ onSuccess }) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="max-w-md sm:max-w-2xl mx-auto bg-[#F8F8F3] sm:bg-white border-0 sm:border-2 sm:border-[#191D19] p-2 sm:p-7 rounded-2xl sm:shadow-[5px_5px_0_#191D19] space-y-4 sm:space-y-5 mt-2 sm:mt-5 text-[#191D19]"
+      className="max-w-2xl mx-auto bg-white border border-gray-200/80 p-8 rounded-2xl shadow-sm space-y-6 mt-6"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b-2 border-[#191D19] pb-3.5">
-        <div>
-          <span className="inline-block bg-[#E8EFE4] border border-[#191D19] rounded-md px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-[#3B5235]">
-            NIELIT Agartala · Employee
+      <div className="border-b border-gray-100 pb-5">
+        <div className="flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span className="text-xs font-semibold tracking-wider text-emerald-600 uppercase">
+            Employee Verification Portal
           </span>
-          <h2 className="text-xl sm:text-2xl font-black tracking-tight mt-1">
-            Mark Attendance
-          </h2>
         </div>
-        <span className="bg-[#FFD84D] border-2 border-[#191D19] rounded-xl px-3 py-1 text-xs font-extrabold shadow-[2px_2px_0_#191D19]">
-          {isInside ? `${distance}m OK` : 'GPS Pending'}
-        </span>
+        <h2 className="text-2xl font-bold tracking-tight text-gray-900 mt-1">
+          Mark Attendance
+        </h2>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Authenticate via GPS geofence and live selfie (uploaded securely via backend to ImgBB & PostgreSQL).
+        </p>
       </div>
 
       {errorMsg && (
-        <div className="p-3 rounded-xl bg-[#FFE5E5] border-2 border-[#191D19] text-[#8A1C1C] text-xs font-bold">
+        <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-medium">
           {errorMsg}
         </div>
       )}
 
-      {/* Steps Grid: 1 Col on Mobile, 2 Cols on PC */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {/* Step 1: GPS Geofence Verification */}
-        <div className="bg-white border-2 border-[#191D19] rounded-2xl p-4 sm:p-5 shadow-[4px_4px_0_#191D19] flex flex-col justify-between gap-3">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs sm:text-sm font-black flex items-center gap-2">
-                <span className="w-6 h-6 rounded-full bg-[#6B8A63] text-white border-2 border-[#191D19] flex items-center justify-center text-xs font-extrabold">
-                  1
-                </span>
-                Location Check
-              </span>
-              {isInside && (
-                <span className="bg-[#E8EFE4] border border-[#191D19] rounded-lg px-2 py-0.5 text-[10px] font-extrabold">
-                  Verified
-                </span>
-              )}
-            </div>
-
-            <p className="text-xs text-[#4A5049] font-medium leading-relaxed">
-              {locationStatus || 'Tap below to verify campus geofence.'}
-            </p>
-          </div>
-
-          <button
-            type="button"
-            disabled={checkingLoc}
-            onClick={verifyLocation}
-            className="w-full bg-[#F2F4EC] hover:bg-[#E8EFE4] disabled:opacity-50 text-[#191D19] font-bold text-xs sm:text-sm py-2.5 px-4 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
-          >
-            {checkingLoc ? 'Checking GPS...' : isInside ? 'Recheck Location' : 'Check My Location'}
-          </button>
+      {/* Step 1: GPS Geofence Verification */}
+      <div className="border border-gray-200/80 p-5 rounded-xl bg-gray-50/40 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-medium">
+              1
+            </span>
+            Geofence Verification (NIELIT Agartala)
+          </h3>
+          {isInside && (
+            <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs px-3 py-1 rounded-full font-medium">
+              Verified ({distance}m)
+            </span>
+          )}
         </div>
 
-        {/* Step 2: Live Selfie Capture + Face Descriptor */}
-        <div className="bg-white border-2 border-[#191D19] rounded-2xl p-4 sm:p-5 shadow-[4px_4px_0_#191D19] flex flex-col justify-between gap-3">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs sm:text-sm font-black flex items-center gap-2">
-                <span className="w-6 h-6 rounded-full bg-[#FFD84D] text-[#191D19] border-2 border-[#191D19] flex items-center justify-center text-xs font-extrabold">
-                  2
-                </span>
-                Live Selfie
-              </span>
-              {capturedImage && faceDescriptor && (
-                <span className="bg-[#E8EFE4] border border-[#191D19] rounded-lg px-2 py-0.5 text-[10px] font-extrabold">
-                  Face Ready
-                </span>
-              )}
-            </div>
+        <button
+          type="button"
+          onClick={verifyLocation}
+          className="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+        >
+          Check My Location
+        </button>
 
-            {!cameraActive && !capturedImage && (
-              <p className="text-xs text-[#4A5049] font-medium leading-relaxed">
-                {scanningFace
-                  ? faceStatus
-                  : isInside
-                  ? 'Open front camera to take live selfie.'
-                  : 'Verify location first to unlock camera.'}
-              </p>
-            )}
-          </div>
+        {locationStatus && (
+          <p className="text-xs font-medium text-gray-600 bg-white border border-gray-200 p-2.5 rounded-lg">
+            {locationStatus}
+          </p>
+        )}
+      </div>
+
+      {/* Step 2: Live Selfie Capture */}
+      {isInside && (
+        <div className="border border-gray-200/80 p-5 rounded-xl bg-gray-50/40 space-y-4">
+          <h3 className="font-semibold text-gray-900 text-sm flex items-center gap-2">
+            <span className="w-6 h-6 rounded-full bg-gray-900 text-white flex items-center justify-center text-xs font-medium">
+              2
+            </span>
+            Live Selfie Capture
+          </h3>
 
           {!cameraActive && !capturedImage && (
             <button
               type="button"
-              disabled={!isInside || scanningFace}
               onClick={startCamera}
-              className="w-full bg-[#6B8A63] hover:bg-[#5B7854] disabled:opacity-45 text-white font-bold text-xs sm:text-sm py-2.5 px-4 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
+              className="bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
             >
-              {scanningFace ? 'Scanning Face...' : 'Open Camera Feed'}
+              Open Camera Feed
             </button>
           )}
 
           {cameraActive && (
-            <div className="space-y-2.5">
+            <div className="space-y-3">
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-40 sm:h-44 border-2 border-[#191D19] rounded-xl object-cover bg-black"
+                className="w-full max-w-xs h-48 border border-gray-200 rounded-xl object-cover bg-black shadow-inner"
               />
-              <button
-                type="button"
-                disabled={scanningFace}
-                onClick={capturePhoto}
-                className="w-full bg-[#FFD84D] hover:bg-[#F5CC36] disabled:opacity-50 text-[#191D19] font-extrabold text-xs sm:text-sm py-2.5 px-4 rounded-xl border-2 border-[#191D19] shadow-[3px_3px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
-              >
-                {scanningFace ? 'Scanning Face...' : 'Capture Snapshot'}
-              </button>
+              <div>
+                <button
+                  type="button"
+                  onClick={capturePhoto}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition-all cursor-pointer"
+                >
+                  Capture Snapshot
+                </button>
+              </div>
             </div>
           )}
 
+          <canvas ref={canvasRef} className="hidden" />
+
           {capturedImage && (
-            <div className="space-y-2 pt-1">
-              {faceStatus && (
-                <p className="text-[11px] font-bold text-[#283B24]">{faceStatus}</p>
-              )}
-              <div className="flex items-center justify-between gap-3">
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-100 p-2 rounded-lg inline-block">
+                ✓ Snapshot ready for backend upload
+              </p>
+              <div>
                 <img
                   src={capturedImage}
                   alt="Selfie preview"
-                  className="w-24 h-20 border-2 border-[#191D19] rounded-xl object-cover shrink-0"
+                  className="w-32 h-24 border border-gray-200 rounded-xl object-cover shadow-sm"
                 />
+              </div>
+              <div>
                 <button
                   type="button"
-                  disabled={scanningFace}
                   onClick={startCamera}
-                  className="bg-[#F2F4EC] hover:bg-[#E8EFE4] disabled:opacity-50 text-[#191D19] font-bold text-xs px-3.5 py-2 rounded-xl border-2 border-[#191D19] shadow-[2px_2px_0_#191D19] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none transition-all cursor-pointer"
+                  className="text-xs text-gray-600 hover:text-gray-900 font-medium underline cursor-pointer"
                 >
-                  Retake Photo
+                  Retake photo
                 </button>
               </div>
             </div>
           )}
         </div>
-      </div>
-
-      <canvas ref={canvasRef} className="hidden" />
+      )}
 
       {/* Final Submit */}
-      <button
-        type="submit"
-        disabled={submitting || scanningFace || !isInside || !capturedImage || !faceDescriptor}
-        className="w-full bg-[#6B8A63] hover:bg-[#5B7854] disabled:opacity-45 text-white font-extrabold text-sm py-3.5 rounded-xl border-2 border-[#191D19] shadow-[4px_4px_0_#191D19] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all cursor-pointer"
-      >
-        {submitting ? 'Uploading to ImgBB & Saving to DB...' : 'Submit Verified Attendance'}
-      </button>
+      {isInside && capturedImage && (
+        <button
+          type="submit"
+          disabled={submitting}
+          className="w-full bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white p-3.5 rounded-xl font-semibold text-sm shadow-sm tracking-wide transition-all cursor-pointer"
+        >
+          {submitting ? 'Uploading to ImgBB & Saving to DB...' : 'Submit Verified Attendance'}
+        </button>
+      )}
     </form>
   );
 }

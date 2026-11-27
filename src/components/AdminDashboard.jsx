@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import * as faceapi from '@vladmandic/face-api';
 import { apiRequest } from '../api/client';
 
 const WEEK_DAYS = [
@@ -11,37 +10,6 @@ const WEEK_DAYS = [
   { id: 5, label: 'Friday' },
   { id: 6, label: 'Saturday' },
 ];
-
-let faceModelsLoaded = false;
-
-async function ensureFaceModelsLoaded() {
-  if (faceModelsLoaded) return;
-  await Promise.all([
-    faceapi.nets.ssdMobilenetv1.loadFromUri('/models'),
-    faceapi.nets.faceLandmark68Net.loadFromUri('/models'),
-    faceapi.nets.faceRecognitionNet.loadFromUri('/models'),
-  ]);
-  faceModelsLoaded = true;
-}
-
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Image file read nahi ho saki.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function loadImageElement(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Image load nahi ho saki.'));
-    img.src = src;
-  });
-}
 
 function formatMonthLabel(ymKey) {
   if (!ymKey || ymKey === 'all') return 'All Months';
@@ -100,7 +68,7 @@ export default function AdminDashboard() {
   const [selectedMonth, setSelectedMonth] = useState(defaultMonth);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
 
-  // New employee form state (with reference face descriptor)
+  // New employee form state
   const [form, setForm] = useState({
     id: '',
     name: '',
@@ -108,11 +76,7 @@ export default function AdminDashboard() {
     password: '',
     dept: 'Training',
     designation: 'Staff',
-    referenceFaceDescriptor: null,
   });
-  const [facePreview, setFacePreview] = useState('');
-  const [faceStatus, setFaceStatus] = useState('');
-  const [extractingFace, setExtractingFace] = useState(false);
 
   // New holiday form state
   const [holidayForm, setHolidayForm] = useState({
@@ -241,88 +205,17 @@ export default function AdminDashboard() {
     });
   }, [allRecords, selectedMonth, selectedEmployeeId]);
 
-  const handleReferenceFaceChange = async (e) => {
-    const file = e.target.files?.[0];
-    setErr('');
-    setFaceStatus('');
-    setForm((prev) => ({ ...prev, referenceFaceDescriptor: null }));
-
-    if (!file) {
-      setFacePreview('');
-      return;
-    }
-
-    try {
-      setExtractingFace(true);
-      setFaceStatus('Scanning face & generating reference descriptor...');
-      const dataUrl = await readFileAsDataUrl(file);
-      setFacePreview(dataUrl);
-
-      await ensureFaceModelsLoaded();
-      const imgEl = await loadImageElement(dataUrl);
-      const detections = await faceapi
-        .detectAllFaces(imgEl)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-
-      if (detections.length === 0) {
-        setFacePreview('');
-        setFaceStatus('');
-        setErr('Photo mein face detect nahi hua. Clear front-facing photo upload karein.');
-        return;
-      }
-
-      if (detections.length > 1) {
-        setFacePreview('');
-        setFaceStatus('');
-        setErr('Photo mein 1 se zyada faces hain. Sirf employee ka single face photo upload karein.');
-        return;
-      }
-
-      const descriptor = Array.from(detections[0].descriptor);
-      setForm((prev) => ({ ...prev, referenceFaceDescriptor: descriptor }));
-      setFaceStatus('Face enrolled & ready (128-d descriptor captured).');
-    } catch (error) {
-      setFacePreview('');
-      setFaceStatus('');
-      setErr(error.message || 'Face scan failed. Check /models folder.');
-    } finally {
-      setExtractingFace(false);
-    }
-  };
-
   const handleAddEmployee = async (e) => {
     e.preventDefault();
     setMsg('');
     setErr('');
-
-    if (extractingFace) {
-      setErr('Face scanning chal rahi hai, thoda wait karein.');
-      return;
-    }
-
-    if (!form.referenceFaceDescriptor || form.referenceFaceDescriptor.length !== 128) {
-      setErr('Employee add karne se pehle clear face photo upload karke face enroll karein.');
-      return;
-    }
-
     try {
       await apiRequest('/admin/employees', {
         method: 'POST',
         body: { ...form, role: 'employee' },
       });
-      setForm({
-        id: '',
-        name: '',
-        email: '',
-        password: '',
-        dept: 'Training',
-        designation: 'Staff',
-        referenceFaceDescriptor: null,
-      });
-      setFacePreview('');
-      setFaceStatus('');
-      setMsg('Employee added with enrolled face descriptor.');
+      setForm({ id: '', name: '', email: '', password: '', dept: 'Training', designation: 'Staff' });
+      setMsg('Employee added successfully.');
       await loadData();
     } catch (e) {
       setErr(e.message);
@@ -749,40 +642,12 @@ export default function AdminDashboard() {
               onChange={(e) => setForm({ ...form, designation: e.target.value })}
               className="border border-gray-300 rounded-xl p-2.5 text-sm"
             />
-
-            {/* Reference Face Enrollment Input */}
-            <div className="md:col-span-3 border border-gray-200 rounded-xl p-4 bg-gray-50/50 flex flex-wrap items-center justify-between gap-4">
-              <div className="space-y-1">
-                <label className="block text-xs font-semibold text-gray-700">
-                  Reference Face Photo (1:1 Attendance Verification Ke Liye)
-                </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleReferenceFaceChange}
-                  className="text-xs text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-xs file:font-semibold file:bg-white file:text-gray-800 hover:file:bg-gray-100 cursor-pointer"
-                />
-                {faceStatus && (
-                  <p className="text-xs font-medium text-emerald-700">{faceStatus}</p>
-                )}
-              </div>
-
-              {facePreview && (
-                <img
-                  src={facePreview}
-                  alt="Reference face preview"
-                  className="w-16 h-16 object-cover rounded-xl border border-gray-300"
-                />
-              )}
-            </div>
-
             <div className="md:col-span-3">
               <button
                 type="submit"
-                disabled={extractingFace}
-                className="bg-gray-900 hover:bg-gray-800 disabled:opacity-50 text-white px-5 py-2.5 rounded-xl text-xs font-semibold cursor-pointer"
+                className="bg-gray-900 hover:bg-gray-800 text-white px-5 py-2.5 rounded-xl text-xs font-semibold cursor-pointer"
               >
-                {extractingFace ? 'Scanning Face...' : '+ Add Employee'}
+                + Add Employee
               </button>
             </div>
           </form>
@@ -795,61 +660,46 @@ export default function AdminDashboard() {
                   <th className="py-2 pr-4">Name</th>
                   <th className="py-2 pr-4">Email</th>
                   <th className="py-2 pr-4">Dept</th>
-                  <th className="py-2 pr-4">Face ID</th>
                   <th className="py-2 pr-4">Status</th>
                   <th className="py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {employees.map((u) => {
-                  const hasFace = Boolean(u.reference_face_descriptor || u.face_enrolled);
-                  return (
-                    <tr key={u.id} className="border-b border-gray-100">
-                      <td className="py-3 pr-4 font-mono text-xs">{u.id}</td>
-                      <td className="py-3 pr-4 font-medium text-gray-900">{u.name}</td>
-                      <td className="py-3 pr-4 text-gray-600">{u.email}</td>
-                      <td className="py-3 pr-4 text-gray-600">{u.dept}</td>
-                      <td className="py-3 pr-4">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
-                            hasFace
-                              ? 'bg-emerald-50 text-emerald-700'
-                              : 'bg-amber-50 text-amber-800'
-                          }`}
-                        >
-                          {hasFace ? 'Enrolled' : 'Missing'}
-                        </span>
-                      </td>
-                      <td className="py-3 pr-4">
-                        <span
-                          className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
-                            u.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'
-                          }`}
-                        >
-                          {u.is_active ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td className="py-3 flex gap-2">
+                {employees.map((u) => (
+                  <tr key={u.id} className="border-b border-gray-100">
+                    <td className="py-3 pr-4 font-mono text-xs">{u.id}</td>
+                    <td className="py-3 pr-4 font-medium text-gray-900">{u.name}</td>
+                    <td className="py-3 pr-4 text-gray-600">{u.email}</td>
+                    <td className="py-3 pr-4 text-gray-600">{u.dept}</td>
+                    <td className="py-3 pr-4">
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                          u.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {u.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                    <td className="py-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleEmployee(u.id)}
+                        className="px-3 py-1 rounded-lg border border-gray-300 text-xs font-medium cursor-pointer"
+                      >
+                        Toggle
+                      </button>
+                      {u.role !== 'admin' && (
                         <button
                           type="button"
-                          onClick={() => handleToggleEmployee(u.id)}
-                          className="px-3 py-1 rounded-lg border border-gray-300 text-xs font-medium cursor-pointer"
+                          onClick={() => handleDeleteEmployee(u.id)}
+                          className="px-3 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-xs font-medium cursor-pointer"
                         >
-                          Toggle
+                          Delete
                         </button>
-                        {u.role !== 'admin' && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteEmployee(u.id)}
-                            className="px-3 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-xs font-medium cursor-pointer"
-                          >
-                            Delete
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -945,6 +795,16 @@ export default function AdminDashboard() {
                 );
               })}
             </div>
+            <p className="text-xs text-gray-500">
+              Abhi select kiye gaye weekly off days:{' '}
+              <b>
+                {(policy.weekly_off || []).length === 0
+                  ? 'None (7 days open)'
+                  : WEEK_DAYS.filter((d) => policy.weekly_off.includes(d.id))
+                      .map((d) => d.label)
+                      .join(', ')}
+              </b>
+            </p>
           </div>
 
           <div>
@@ -988,10 +848,7 @@ export default function AdminDashboard() {
               <select
                 value={holidayForm.is_working_override ? 'true' : 'false'}
                 onChange={(e) =>
-                  setHolidayForm({
-                    ...holidayForm,
-                    is_working_override: e.target.value === 'true',
-                  })
+                  setHolidayForm({ ...holidayForm, is_working_override: e.target.value === 'true' })
                 }
                 className="w-full border border-gray-300 rounded-xl p-2.5 text-sm bg-white"
               >
